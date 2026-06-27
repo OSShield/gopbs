@@ -214,7 +214,7 @@ func backup_stream(client *pbscommon.PBSClient, newchunk, reusechunk *atomic.Uin
 func pxar_only(pxarOut string, backupdir string) error {
 	knownChunks := hashmap.New[string, bool]()
 	archive := &pbscommon.PXARArchive{}
-	archive.ArchiveName = "tizbac.pxar.didx"
+	archive.ArchiveName = "pbs.pxar"
 
 	f, err := os.Create(pxarOut)
 	if err != nil {

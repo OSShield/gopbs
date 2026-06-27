@@ -1,15 +1,21 @@
-package main
+//go:build integration
+
+package main_test
 
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"fmt"
+	"io"
 	"log"
 	"math/big"
 	"os"
 	"path/filepath"
 	"strings"
+	"testing"
 
+	"github.com/compose-spec/compose-go/v2/types"
 	"github.com/docker/cli/cli/command"
 	"github.com/docker/cli/cli/flags"
 	"github.com/docker/compose/v5/pkg/api"
@@ -133,6 +139,11 @@ func composeCreatePxars() error {
 		return fmt.Errorf("failed to load project: %w", err)
 	}
 
+	project.Environment = project.Environment.Merge(types.Mapping{
+		"UID": fmt.Sprintf("%d", os.Getuid()),
+		"GID": fmt.Sprintf("%d", os.Getgid()),
+	})
+
 	defer func() {
 		if cleanupErr := cleanupProjectContainers(ctx, dockerCLI, project.Name); cleanupErr != nil {
 			log.Printf("Final cleanup failed for project %s: %v", project.Name, cleanupErr)
@@ -166,6 +177,19 @@ func composeCreatePxars() error {
 		return fmt.Errorf("failed to run one-off container for tizbac: %w", err)
 	}
 
+	cleanupProjectContainers(ctx, dockerCLI, project.Name)
+
+	_, err = service.RunOneOffContainer(ctx, project, api.RunOptions{
+		Service:       "gopxar",
+		AutoRemove:    true,
+		RemoveOrphans: true,
+		Detach:        false,
+	})
+
+	if err != nil {
+		return fmt.Errorf("failed to run one-off container for gopxar: %w", err)
+	}
+
 	log.Printf("Successfully created pxar: %s", project.Name)
 	return nil
 }
@@ -197,12 +221,176 @@ func rmAll() {
 		}
 	}
 
+	files, err = os.ReadDir(".test-restore")
+	if err != nil {
+		log.Fatalf("Failed to read .test-restore directory: %v", err)
+	}
+	for _, file := range files {
+		if file.Name() != ".gitkeep" {
+			err := os.RemoveAll(filepath.Join(".test-restore", file.Name()))
+			if err != nil {
+				log.Printf("Failed to remove %s: %v", file.Name(), err)
+			}
+		}
+	}
+
 }
 
-func main() {
+// Compares two directory trees for equality in structure and content. Returns true if they are identical, false otherwise.
+func CompareDirectoryTree(dir1, dir2 string) (bool, error) {
+	type fileEntry struct {
+		relPath string
+		isDir   bool
+		hash    string
+	}
+
+	collectEntries := func(root string) ([]fileEntry, error) {
+		var entries []fileEntry
+		err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return err
+			}
+			rel, err := filepath.Rel(root, path)
+			if err != nil {
+				return err
+			}
+			if rel == "." {
+				return nil
+			}
+			entry := fileEntry{relPath: rel, isDir: info.IsDir()}
+			if !info.IsDir() {
+				f, err := os.Open(path)
+				if err != nil {
+					return fmt.Errorf("failed to open %s: %w", path, err)
+				}
+				defer f.Close()
+				h := sha256.New()
+				if _, err := io.Copy(h, f); err != nil {
+					return fmt.Errorf("failed to hash %s: %w", path, err)
+				}
+				entry.hash = fmt.Sprintf("%x", h.Sum(nil))
+			}
+			entries = append(entries, entry)
+			return nil
+		})
+		return entries, err
+	}
+
+	entries1, err := collectEntries(dir1)
+	if err != nil {
+		return false, fmt.Errorf("failed to collect entries from %s: %w", dir1, err)
+	}
+	entries2, err := collectEntries(dir2)
+	if err != nil {
+		return false, fmt.Errorf("failed to collect entries from %s: %w", dir2, err)
+	}
+
+	if len(entries1) != len(entries2) {
+		return false, nil
+	}
+
+	index := make(map[string]struct {
+		isDir bool
+		hash  string
+	}, len(entries2))
+	for _, e := range entries2 {
+		index[e.relPath] = struct {
+			isDir bool
+			hash  string
+		}{e.isDir, e.hash}
+	}
+
+	for _, e := range entries1 {
+		e2, ok := index[e.relPath]
+		if !ok || e2.isDir != e.isDir || e2.hash != e.hash {
+			return false, nil
+		}
+	}
+
+	return true, nil
+}
+
+func TestMain(m *testing.M) {
 	rmAll()
+
 	mktree()
+
 	if err := composeCreatePxars(); err != nil {
 		log.Fatalf("composeCreatePxars failed: %v", err)
+	}
+
+	ex := m.Run()
+
+	// rmAll()
+	os.Exit(ex)
+}
+
+// Ensure that the two PXARs created by tizbac/pxar-cli are identical in content and structure
+func TestComparison(t *testing.T) {
+	// Extract all files
+	ctx := context.Background()
+
+	dockerCLI, err := command.NewDockerCli()
+	if err != nil {
+		t.Fatalf("failed to create docker CLI: %v", err)
+	}
+	err = dockerCLI.Initialize(&flags.ClientOptions{})
+	if err != nil {
+		t.Fatalf("failed to initialize docker CLI: %v", err)
+	}
+
+	service, err := compose.NewComposeService(dockerCLI)
+	if err != nil {
+		t.Fatalf("failed to create compose service: %v", err)
+	}
+
+	project, err := service.LoadProject(ctx, api.ProjectLoadOptions{
+		ConfigPaths: []string{"compose.yml"},
+	})
+	if err != nil {
+		t.Fatalf("failed to load project: %v", err)
+	}
+
+	project.Environment = project.Environment.Merge(types.Mapping{
+		"UID": fmt.Sprintf("%d", os.Getuid()),
+		"GID": fmt.Sprintf("%d", os.Getgid()),
+	})
+
+	defer func() {
+		if cleanupErr := cleanupProjectContainers(ctx, dockerCLI, project.Name); cleanupErr != nil {
+			log.Printf("Final cleanup failed for project %s: %v", project.Name, cleanupErr)
+		}
+	}()
+
+	err = cleanupProjectContainers(ctx, dockerCLI, project.Name)
+	if err != nil {
+		t.Fatalf("failed to clean existing project containers: %v", err)
+	}
+
+	_, err = service.RunOneOffContainer(ctx, project, api.RunOptions{
+		Service:       "restore",
+		AutoRemove:    true,
+		RemoveOrphans: true,
+		Detach:        false,
+	})
+
+	if err != nil {
+		t.Fatalf("failed to run one-off container for restore: %v", err)
+	}
+
+	equal, err := CompareDirectoryTree(".test-restore/tizbac", ".test-restore/pbs")
+	if err != nil {
+		t.Fatalf("failed to compare directory trees: %v", err)
+	}
+	if !equal {
+		t.Fatalf("directory trees are not identical")
+	}
+
+	equal, err = CompareDirectoryTree(".test-restore/gopxar", ".test-restore/pbs")
+	if err != nil {
+		t.Fatalf("failed to compare directory trees: %v", err)
+	}
+	if !equal {
+		t.Fatalf("directory trees are not identical")
 	}
 }

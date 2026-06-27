@@ -1,5 +1,7 @@
 services:
   tizbac:
+    container_name: tizbac
+    user: ${UID:-1000}:${GID:-1000}
     build:
       context: .
       dockerfile: tizbac.Dockerfile
@@ -8,6 +10,8 @@ services:
       - ./.test-pxar:/pxar:rw
   
   pbs:
+    container_name: pbs
+    user: ${UID:-1000}:${GID:-1000}
     build:
       context: .
       dockerfile: pbs.Dockerfile
@@ -18,3 +22,34 @@ services:
     volumes:
       - ./.test-source:/source:ro
       - ./.test-pxar:/pxar:rw
+  
+  gopxar:
+    container_name: gopxar
+    user: ${UID:-1000}:${GID:-1000}
+    build:
+      context: ./gopxar
+      dockerfile: ./gopxar.Dockerfile
+    command:
+      - /pxar/gopbs.pxar
+      - /source
+    volumes:
+      - ./.test-source:/source:ro
+      - ./.test-pxar:/pxar:rw
+
+  restore:
+    container_name: restore
+    user: ${UID:-1000}:${GID:-1000}
+    build:
+      context: .
+      dockerfile: pbs.Dockerfile
+    entrypoint: ""
+    command:
+      - "bash"
+      - "-c"
+      - |
+        pxar extract /pxar/pbs.pxar /restore/pbs
+        pxar extract /pxar/tizbac.pxar /restore/tizbac
+        pxar extract /pxar/gopbs.pxar /restore/gopbs
+    volumes:
+      - ./.test-pxar:/pxar:ro
+      - ./.test-restore:/restore:rw
