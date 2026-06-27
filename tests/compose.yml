@@ -1,0 +1,20 @@
+services:
+  tizbac:
+    build:
+      context: .
+      dockerfile: tizbac.Dockerfile
+    volumes:
+      - ./.test-source:/source:ro
+      - ./.test-pxar:/pxar:rw
+  
+  pbs:
+    build:
+      context: .
+      dockerfile: pbs.Dockerfile
+    command:
+      - "create"
+      - "/pxar/pbs.pxar"
+      - "/source"
+    volumes:
+      - ./.test-source:/source:ro
+      - ./.test-pxar:/pxar:rw

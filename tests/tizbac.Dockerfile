@@ -1,0 +1,13 @@
+FROM debian:latest
+
+WORKDIR /app
+
+COPY ./tizbac /app
+
+RUN apt-get update && apt-get install -y ca-certificates && update-ca-certificates && apt-get -y install golang && go build -o directorybackup main.go
+
+FROM debian:latest
+
+COPY --from=0 /app/directorybackup /usr/local/bin
+
+ENTRYPOINT ["directorybackup"]

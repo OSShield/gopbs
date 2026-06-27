@@ -30,3 +30,13 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+.sources/
+
+
+tests/.test-source/*
+!tests/.test-source/.gitkeep
+tests/.test-pxar/*
+!tests/.test-pxar/.gitkeep
+tests/.test-restore/*
+!tests/.test-restore/.gitkeep
