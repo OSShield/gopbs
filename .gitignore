@@ -40,3 +40,8 @@ tests/.test-pxar/*
 !tests/.test-pxar/.gitkeep
 tests/.test-restore/*
 !tests/.test-restore/.gitkeep
+
+__debug*
+
+/*.md
+!README.md
