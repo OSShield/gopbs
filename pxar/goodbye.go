@@ -33,7 +33,7 @@ func AppendGoodbye(dst []byte, items []GoodbyeItem, dirEntryStart, goodbyeStart 
 	copy(sorted, items)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Hash < sorted[j].Hash })
 
-	for _, item := range PermuteBST(sorted) {
+	for _, item := range permuteBST(sorted) {
 		dst = binary.LittleEndian.AppendUint64(dst, item.Hash)
 		dst = binary.LittleEndian.AppendUint64(dst, goodbyeStart-item.Start)
 		dst = binary.LittleEndian.AppendUint64(dst, item.Length)

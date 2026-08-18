@@ -2,13 +2,13 @@ package pxar
 
 import "math/bits"
 
-// PermuteBST rearranges a hash-sorted slice of goodbye items into the casync
+// permuteBST rearranges a hash-sorted slice of goodbye items into the casync
 // implicit binary search tree layout: for the item at index i, the item at
 // 2i+1 hashes lower and the item at 2i+2 hashes higher, so lookups bisect
 // with strictly increasing indexes. Permutation formula by L. Bressel, 2017;
 // this is a port of proxmox/pxar src/binary_tree_array.rs (via
 // go-pxar/pxar/bintree.go, verified against the upstream test vectors).
-func PermuteBST(sorted []GoodbyeItem) []GoodbyeItem {
+func permuteBST(sorted []GoodbyeItem) []GoodbyeItem {
 	tree := make([]GoodbyeItem, len(sorted))
 	n := uint64(len(sorted))
 	insertBST(sorted, tree, n, uint64(bits.Len64(n)), 0)

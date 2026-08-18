@@ -1,0 +1,5 @@
+.git
+.sources
+tests/.test-source
+tests/.test-pxar
+tests/.test-restore

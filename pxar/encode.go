@@ -98,8 +98,10 @@ func AppendDevice(dst []byte, d Device) []byte {
 func SizeHardlink(target string) uint64 { return HeaderSize + 8 + uint64(len(target)) + 1 }
 
 // AppendHardlink encodes a hardlink record: offset is the distance in bytes
-// from this record's header back to the link target's TypeFilename record;
-// target is the archive-relative path of the target (NUL-terminated).
+// from the start of this hardlink's own TypeFilename record back to the start
+// of the link target's TypeFilename record (the upstream encoder's
+// current_position - target_position); target is the archive-relative path of
+// the target (NUL-terminated).
 func AppendHardlink(dst []byte, offset uint64, target string) []byte {
 	dst = appendHeader(dst, TypeHardlink, SizeHardlink(target))
 	dst = binary.LittleEndian.AppendUint64(dst, offset)
