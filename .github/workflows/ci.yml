@@ -1,36 +1,53 @@
 # name: CI
 
-# on:
-#   push:
-#   pull_request:
+on:
+  push:
+  pull_request:
 
-# jobs:
-#   library:
-#     runs-on: ubuntu-latest
-#     steps:
-#       - uses: actions/checkout@v4
-#       - uses: actions/setup-go@v5
-#         with:
-#           go-version-file: go.mod
-#       - name: Vet
-#         run: go vet ./...
-#       - name: Staticcheck
-#         uses: dominikh/staticcheck-action@v1
-#         with:
-#           install-go: false
-#       - name: Test (race)
-#         run: go test -race ./...
+jobs:
+  library:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Vet
+        run: go vet ./...
+      - name: Staticcheck
+        uses: dominikh/staticcheck-action@v1
+        with:
+          install-go: false
+      - name: Test (race)
+        run: go test -race ./...
 
-#   tests-module:
-#     # The integration harness itself needs docker-compose and a PBS container;
-#     # here we only make sure the module keeps compiling. Integration runs are
-#     # gated behind the `integration` build tag and run locally / on demand.
-#     runs-on: ubuntu-latest
-#     steps:
-#       - uses: actions/checkout@v4
-#       - uses: actions/setup-go@v5
-#         with:
-#           go-version-file: tests/go.mod
-#       - name: Vet (integration tag)
-#         working-directory: tests
-#         run: go vet -tags integration ./...
+  integration-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: tests/go.mod
+        
+      - name: Vet (integration tag)
+        working-directory: tests
+        run: go vet -tags integration ./...
+    
+      - name: Install docker
+        uses: docker/setup-buildx-action@v2
+        with:
+          version: latest
+    
+      - name: Test (integration tag)
+        working-directory: tests
+        run: |
+            docker compose build
+            go test -tags integration ./
+
+      - name: Go tests
+        uses: robherley/go-test-action@v1
+        with:
+            moduleDirectory: tests
+            testArguments: -tags integration
+            cover: true
