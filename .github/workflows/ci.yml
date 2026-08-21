@@ -42,6 +42,7 @@ jobs:
       - name: Test (integration tag)
         working-directory: tests
         run: |
+            sed -i "s/1000:1000/$(id -u):$(id -g)/g" compose.yml
             docker compose build
             go test -tags integration ./
 
