@@ -1,6 +1,6 @@
 services:
   tizbac:
-    user: ${UID:-1000}:${GID:-1000}
+    user: 1000:1000
     build:
       context: .
       dockerfile: tizbac.Dockerfile
@@ -9,7 +9,7 @@ services:
       - ./.test-pxar:/pxar:rw
 
   pbs:
-    user: ${UID:-1000}:${GID:-1000}
+    user: 1000:1000
     build:
       context: .
       dockerfile: pbs.Dockerfile
@@ -22,11 +22,13 @@ services:
       - ./.test-pxar:/pxar:rw
 
   gopbs:
-    user: ${UID:-1000}:${GID:-1000}
+    user: 1000:1000
     build:
       context: ..
       dockerfile: tests/gopbs.Dockerfile
     command:
+      - -catalog
+      - /pxar/gopbs.pcat1
       - /pxar/gopbs.pxar
       - /source
     volumes:
@@ -34,7 +36,7 @@ services:
       - ./.test-pxar:/pxar:rw
 
   restore:
-    user: ${UID:-1000}:${GID:-1000}
+    user: 1000:1000
     build:
       context: .
       dockerfile: pbs.Dockerfile

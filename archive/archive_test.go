@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/scheiblingco/gopbs/archive"
+	"github.com/scheiblingco/gopbs/catalog"
 	"github.com/scheiblingco/gopbs/scan"
 	"golang.org/x/sys/unix"
 )
@@ -321,5 +322,72 @@ func TestGenerateV1Cancellation(t *testing.T) {
 	cancel()
 	if _, err := io.ReadAll(rc); err == nil {
 		t.Error("reads after cancellation must fail")
+	}
+}
+
+// GenerateCatalog must mirror the archive's tree with scan-time metadata.
+func TestGenerateCatalog(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := []byte("catalog content")
+	if err := os.WriteFile(filepath.Join(root, "b.txt"), content, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("b.txt", filepath.Join(root, "sub", "link")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(filepath.Join(root, "b.txt"), filepath.Join(root, "sub", "z.hard")); err != nil {
+		t.Fatal(err)
+	}
+	if err := unix.Mkfifo(filepath.Join(root, "a.fifo"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	a, err := archive.New(archive.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.AddDirectory(root); err != nil {
+		t.Fatal(err)
+	}
+
+	rc, err := a.GenerateCatalog(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rc.Close()
+	data, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dec, err := catalog.Decode(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	top := dec.Child("backup.pxar.didx")
+	if top == nil {
+		t.Fatalf("archive entry missing; root children: %+v", dec.Children)
+	}
+
+	info, err := os.Lstat(filepath.Join(root, "b.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := top.Child("b.txt")
+	if f == nil || f.Type != catalog.TypeFile ||
+		f.Size != uint64(len(content)) || f.MtimeSecs != info.ModTime().Unix() {
+		t.Errorf("b.txt: %+v", f)
+	}
+	if l := top.Child("sub").Child("link"); l == nil || l.Type != catalog.TypeSymlink {
+		t.Errorf("link: %+v", l)
+	}
+	if h := top.Child("sub").Child("z.hard"); h == nil || h.Type != catalog.TypeHardlink {
+		t.Errorf("z.hard: %+v", h)
+	}
+	if p := top.Child("a.fifo"); p == nil || p.Type != catalog.TypeFifo {
+		t.Errorf("a.fifo: %+v", p)
 	}
 }

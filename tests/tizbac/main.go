@@ -9,6 +9,7 @@ import (
 	"hash"
 	"io"
 	"os"
+	"strings"
 	"sync/atomic"
 
 	"local.ly/gopbs/pbscommon"
@@ -214,13 +215,21 @@ func backup_stream(client *pbscommon.PBSClient, newchunk, reusechunk *atomic.Uin
 func pxar_only(pxarOut string, backupdir string) error {
 	knownChunks := hashmap.New[string, bool]()
 	archive := &pbscommon.PXARArchive{}
-	archive.ArchiveName = "pbs.pxar"
+	// Match the catalog entry name gopbs uses so the two .pcat1 outputs are
+	// directly comparable.
+	archive.ArchiveName = "backup.pxar.didx"
 
 	f, err := os.Create(pxarOut)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
+
+	catf, err := os.Create(strings.TrimSuffix(pxarOut, ".pxar") + ".pcat1")
+	if err != nil {
+		return err
+	}
+	defer catf.Close()
 
 	newchunk := &atomic.Uint64{}
 	reusechunk := &atomic.Uint64{}
@@ -244,9 +253,9 @@ func pxar_only(pxarOut string, backupdir string) error {
 		f.Write(b)
 	}
 
-	// archive.CatalogWriteCB = func(b []byte) {
-	// 	pcat1Chunk.HandleData(b, client)
-	// }
+	archive.CatalogWriteCB = func(b []byte) {
+		catf.Write(b)
+	}
 
 	archive.WriteDir(backupdir, "", true)
 

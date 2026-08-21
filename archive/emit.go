@@ -19,12 +19,17 @@ type countWriter struct {
 	scratch []byte // reused for metadata record rendering
 }
 
-func (cw *countWriter) write(p []byte) error {
+func (cw *countWriter) Write(p []byte) (int, error) {
 	if err := cw.ctx.Err(); err != nil {
-		return err
+		return 0, err
 	}
 	n, err := cw.w.Write(p)
 	cw.pos += uint64(n)
+	return n, err
+}
+
+func (cw *countWriter) write(p []byte) error {
+	_, err := cw.Write(p)
 	return err
 }
 
