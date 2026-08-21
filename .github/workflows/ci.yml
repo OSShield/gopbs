@@ -43,7 +43,7 @@ jobs:
         working-directory: tests
         run: |
             sudo chown -R 1000:root .test-*
-            sudo chmod -R g+rwx .test-*
+            sudo chmod -R 777 .test-*
             sed -i "s/1000:1000/$(id -u):$(id -g)/g" compose.yml
             docker compose build
             go test -tags integration ./
