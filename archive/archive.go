@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 	"time"
 
 	"github.com/scheiblingco/gopbs/scan"
@@ -41,8 +42,7 @@ type Options struct {
 	// when more than one root is added. Required in that case.
 	Name string
 	// Workers is the payload-read parallelism: 0 = GOMAXPROCS, 1 = fully
-	// synchronous generation. (Async arrives with the phase-5 emitter; until
-	// then generation is synchronous regardless.)
+	// synchronous generation. Both modes produce byte-identical output.
 	Workers int
 	// Buffer is the reorder-buffer memory budget in bytes (async mode);
 	// 0 = 64 MiB.
@@ -212,14 +212,34 @@ func (a *Archive) GenerateV1(ctx context.Context) (io.ReadCloser, error) {
 		return nil, err
 	}
 
+	workers := a.opts.Workers
+	if workers == 0 {
+		workers = runtime.GOMAXPROCS(0)
+	}
+
 	pr, pw := io.Pipe()
 	go func() {
+		genCtx, cancel := context.WithCancel(ctx)
+		var src payloadSource = syncSource{}
+		var async *asyncSource
+		if workers > 1 {
+			async = newAsyncSource(genCtx, collectPayloads(root, nil), workers, a.opts.Buffer)
+		}
+		if async != nil {
+			src = async
+		}
+
 		em := &emitter{
-			w:    &countWriter{ctx: ctx, w: pw},
-			src:  syncSource{},
+			w:    &countWriter{ctx: genCtx, w: pw},
+			src:  src,
 			warn: a.warn,
 		}
-		pw.CloseWithError(em.run(root))
+		err := em.run(root)
+		cancel()
+		if async != nil {
+			async.wait()
+		}
+		pw.CloseWithError(err)
 	}()
 	return pr, nil
 }
