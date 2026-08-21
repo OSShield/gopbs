@@ -27,7 +27,7 @@ func checkRecord(t *testing.T, name string, got, want []byte) {
 
 func TestAppendEntry(t *testing.T) {
 	e := pxar.Entry{
-		Mode:       0o40755 | 0, // directory bits are part of Mode; raw value used as-is
+		Mode:       0o40755, // directory bits are part of Mode; raw value used as-is
 		Flags:      0,
 		UID:        1000,
 		GID:        1001,
