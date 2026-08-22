@@ -53,3 +53,36 @@ services:
     volumes:
       - ./.test-pxar:/pxar:ro
       - ./.test-restore:/restore:rw
+
+  garage:
+    image: dxflrs/garage:v2.3.0
+    container_name: garage
+    volumes:
+      - ./garage.toml:/etc/garage.toml:ro
+    environment:
+      GARAGE_DEFAULT_BUCKET: pbs
+      GARAGE_DEFAULT_ACCESS_KEY: garagegarage
+      GARAGE_DEFAULT_SECRET_KEY: garagegaragegarage
+      GARAGE_DEFAULT_REGION: local
+    command:
+      - /garage
+      - server
+      - --single-node
+      - --default-bucket
+
+  # Connection settings:
+  # Host: localhost:8007
+  # User ID: garagegarage@pbs
+  # Secret Key: garagegaragegarage
+  # Repository: pbs
+  # Fingerprint: 55:BC:29:4B:BA:B6:A1:03:42:A9:D8:51:14:9D:BD:00:D2:2A:9C:A1:B8:4A:85:E1:AF:B2:0C:48:40:D6:CC:A4
+  pmoxs3:
+    image: ghcr.io/tizbac/pmoxs3backuproxy:latest
+    command: -bind 0.0.0.0:8007 -endpoint garage:3900
+    container_name: pmoxs3
+    hostname: pmoxs3
+    restart: unless-stopped
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+    ports:
+      - '8007:8007'

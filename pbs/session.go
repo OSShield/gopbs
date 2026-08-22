@@ -1,0 +1,356 @@
+package pbs
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"crypto/tls"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"golang.org/x/net/http2"
+)
+
+const backupProtocol = "proxmox-backup-protocol-v1"
+
+// ErrNoPrevious reports that the server has no previous snapshot index for
+// the requested archive.
+var ErrNoPrevious = errors.New("pbs: no previous index")
+
+// BackupSession is one open backup-protocol connection: one session writes
+// exactly one snapshot. It is bound to a single HTTP/2 connection — a
+// connection loss fails the session rather than silently opening a second
+// one (a defect in the reference client; ARCHITECTURE.md §12).
+//
+// Index and blob methods are safe for concurrent use; Finish and Abort are
+// not, and must be called once, after all uploads completed.
+type BackupSession struct {
+	client *Client
+	conn   net.Conn
+	cc     *http2.ClientConn
+	ref    SnapshotRef
+
+	mu       sync.Mutex
+	files    []manifestFile
+	byWID    map[uint64]int // writer id -> index into files
+	finished bool
+}
+
+type manifestFile struct {
+	CryptMode string `json:"crypt-mode"`
+	Csum      string `json:"csum"`
+	Filename  string `json:"filename"`
+	Size      uint64 `json:"size"`
+}
+
+type backupManifest struct {
+	BackupID    string         `json:"backup-id"`
+	BackupTime  int64          `json:"backup-time"`
+	BackupType  string         `json:"backup-type"`
+	Files       []manifestFile `json:"files"`
+	Signature   any            `json:"signature"`
+	Unprotected map[string]any `json:"unprotected"`
+}
+
+// StartBackup opens a backup session: it dials the server, upgrades the
+// connection to the backup protocol, and speaks HTTP/2 over it from then on.
+func (c *Client) StartBackup(ctx context.Context, ref SnapshotRef) (*BackupSession, error) {
+	ref, err := ref.withDefaults()
+	if err != nil {
+		return nil, err
+	}
+
+	query := url.Values{
+		"backup-type": {ref.Type},
+		"backup-id":   {ref.ID},
+		"backup-time": {strconv.FormatInt(ref.Time.Unix(), 10)},
+		"store":       {c.cfg.Datastore},
+	}
+	if c.cfg.Namespace != "" {
+		query.Set("ns", c.cfg.Namespace)
+	}
+
+	header := make(http.Header)
+	if err := c.authHeaders(ctx, header, false); err != nil {
+		return nil, err
+	}
+	header.Set("Upgrade", backupProtocol)
+	header.Set("Connection", "Upgrade")
+
+	// The double slash mirrors proxmox-backup-client's upgrade request
+	// verbatim: the real server normalizes it, and pmoxs3backuproxy matches
+	// on exactly this prefix.
+	conn, err := c.upgrade(ctx, "//api2/json/backup?"+query.Encode(), header)
+	if err != nil {
+		return nil, err
+	}
+
+	cc, err := (&http2.Transport{}).NewClientConn(conn)
+	if err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("pbs: starting http/2: %w", err)
+	}
+
+	return &BackupSession{
+		client: c,
+		conn:   conn,
+		cc:     cc,
+		ref:    ref,
+		byWID:  make(map[uint64]int),
+	}, nil
+}
+
+// upgrade performs the HTTP/1.1 101 handshake and returns the raw connection
+// (with any bytes the server sent after the 101 preserved).
+func (c *Client) upgrade(ctx context.Context, path string, header http.Header) (net.Conn, error) {
+	dialer := &tls.Dialer{Config: c.tlsConf}
+	conn, err := dialer.DialContext(ctx, "tcp", c.addr)
+	if err != nil {
+		return nil, fmt.Errorf("pbs: %w", err)
+	}
+
+	if deadline, ok := ctx.Deadline(); ok {
+		conn.SetDeadline(deadline)
+	} else {
+		conn.SetDeadline(time.Now().Add(30 * time.Second))
+	}
+
+	var req bytes.Buffer
+	fmt.Fprintf(&req, "GET %s HTTP/1.1\r\nHost: %s\r\n", path, c.addr)
+	for key, values := range header {
+		for _, v := range values {
+			fmt.Fprintf(&req, "%s: %s\r\n", key, v)
+		}
+	}
+	req.WriteString("\r\n")
+	if _, err := conn.Write(req.Bytes()); err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("pbs: sending upgrade request: %w", err)
+	}
+
+	br := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(br, nil)
+	if err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("pbs: reading upgrade response: %w", err)
+	}
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
+		conn.Close()
+		return nil, fmt.Errorf("pbs: protocol upgrade refused: %s: %s",
+			resp.Status, strings.TrimSpace(string(body)))
+	}
+
+	conn.SetDeadline(time.Time{})
+	return &bufferedConn{Conn: conn, r: br}, nil
+}
+
+// bufferedConn preserves bytes the bufio.Reader consumed past the 101
+// response — the server may start HTTP/2 immediately after it.
+type bufferedConn struct {
+	net.Conn
+	r *bufio.Reader
+}
+
+func (b *bufferedConn) Read(p []byte) (int, error) { return b.r.Read(p) }
+
+// roundTrip performs one request on the session connection. Session
+// endpoints are root-relative and need no auth headers: authentication is
+// bound to the connection by the upgrade.
+func (s *BackupSession) roundTrip(ctx context.Context, method, path string, query url.Values, body []byte) ([]byte, error) {
+	u := &url.URL{Scheme: "https", Host: s.client.addr, Path: path, RawQuery: query.Encode()}
+	req, err := http.NewRequestWithContext(ctx, method, u.String(), bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("pbs: %w", err)
+	}
+	if method != http.MethodGet {
+		req.Header.Set("Content-Type", "application/json")
+	}
+
+	resp, err := s.cc.RoundTrip(req)
+	if err != nil {
+		return nil, fmt.Errorf("pbs: %s %s: %w", method, path, err)
+	}
+	defer resp.Body.Close()
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("pbs: %s %s: reading response: %w", method, path, err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		if resp.StatusCode == http.StatusNotFound && path == "/previous" {
+			return nil, ErrNoPrevious
+		}
+		return nil, fmt.Errorf("pbs: %s %s: %s: %s",
+			method, path, resp.Status, strings.TrimSpace(string(respBody)))
+	}
+	return respBody, nil
+}
+
+// CreateDynamicIndex opens a dynamic-index writer for the named archive
+// (e.g. "root.pxar.didx") and returns its writer id. Parameters travel in
+// the query string, matching the canonical client's wire format.
+func (s *BackupSession) CreateDynamicIndex(ctx context.Context, name string) (uint64, error) {
+	resp, err := s.roundTrip(ctx, http.MethodPost, "/dynamic_index",
+		url.Values{"archive-name": {name}}, nil)
+	if err != nil {
+		return 0, err
+	}
+	var parsed struct {
+		Data uint64 `json:"data"`
+	}
+	if err := json.Unmarshal(resp, &parsed); err != nil {
+		return 0, fmt.Errorf("pbs: decoding dynamic_index response: %w", err)
+	}
+
+	s.mu.Lock()
+	s.byWID[parsed.Data] = len(s.files)
+	s.files = append(s.files, manifestFile{Filename: name, CryptMode: "none"})
+	s.mu.Unlock()
+	return parsed.Data, nil
+}
+
+// AppendDynamicIndex registers uploaded chunks with an index: digests are
+// lowercase hex, offsets the chunk START positions within the archive
+// stream. At most 128 chunks per call (the server rejects oversized
+// requests); the phase-8 pipeline batches accordingly.
+func (s *BackupSession) AppendDynamicIndex(ctx context.Context, wid uint64, digests []string, offsets []uint64) error {
+	if len(digests) != len(offsets) {
+		return fmt.Errorf("pbs: %d digests for %d offsets", len(digests), len(offsets))
+	}
+	body, err := json.Marshal(map[string]any{
+		"wid":         wid,
+		"digest-list": digests,
+		"offset-list": offsets,
+	})
+	if err != nil {
+		return fmt.Errorf("pbs: %w", err)
+	}
+	_, err = s.roundTrip(ctx, http.MethodPut, "/dynamic_index", nil, body)
+	return err
+}
+
+// CloseDynamicIndex finishes an index: csum is the index checksum (sha256
+// over per-chunk LE end-offset ‖ digest), size the total byte count,
+// chunkCount the number of index entries.
+func (s *BackupSession) CloseDynamicIndex(ctx context.Context, wid uint64, csum [32]byte, size, chunkCount uint64) error {
+	query := url.Values{
+		"wid":         {strconv.FormatUint(wid, 10)},
+		"csum":        {hex.EncodeToString(csum[:])},
+		"size":        {strconv.FormatUint(size, 10)},
+		"chunk-count": {strconv.FormatUint(chunkCount, 10)},
+	}
+	if _, err := s.roundTrip(ctx, http.MethodPost, "/dynamic_close", query, nil); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	if i, ok := s.byWID[wid]; ok {
+		s.files[i].Csum = hex.EncodeToString(csum[:])
+		s.files[i].Size = size
+	}
+	s.mu.Unlock()
+	return nil
+}
+
+// UploadDynamicChunk uploads one content chunk (plaintext; framing and
+// compression are handled here) for the given index writer. digest must be
+// the sha256 of plain.
+func (s *BackupSession) UploadDynamicChunk(ctx context.Context, enc *BlobEncoder, wid uint64, digest [32]byte, plain []byte) error {
+	framed := enc.Encode(plain, true)
+	query := url.Values{
+		"digest":       {hex.EncodeToString(digest[:])},
+		"encoded-size": {strconv.Itoa(len(framed))},
+		"size":         {strconv.Itoa(len(plain))},
+		"wid":          {strconv.FormatUint(wid, 10)},
+	}
+	_, err := s.roundTrip(ctx, http.MethodPost, "/dynamic_chunk", query, framed)
+	return err
+}
+
+// UploadBlob uploads a named blob file (e.g. "index.json.blob") and records
+// it in the manifest: size is the raw payload length, csum the sha256 of the
+// encoded blob as stored by the server.
+func (s *BackupSession) UploadBlob(ctx context.Context, enc *BlobEncoder, filename string, data []byte, compress bool) error {
+	framed := enc.Encode(data, compress)
+	query := url.Values{
+		"file-name":    {filename},
+		"encoded-size": {strconv.Itoa(len(framed))},
+	}
+	if _, err := s.roundTrip(ctx, http.MethodPost, "/blob", query, framed); err != nil {
+		return err
+	}
+
+	sum := sha256.Sum256(framed)
+	s.mu.Lock()
+	s.files = append(s.files, manifestFile{
+		Filename:  filename,
+		Size:      uint64(len(data)),
+		Csum:      hex.EncodeToString(sum[:]),
+		CryptMode: "none",
+	})
+	s.mu.Unlock()
+	return nil
+}
+
+// DownloadPrevious fetches the previous snapshot's raw index for the named
+// archive, for chunk deduplication. Returns ErrNoPrevious when this is the
+// first backup.
+func (s *BackupSession) DownloadPrevious(ctx context.Context, archiveName string) ([]byte, error) {
+	return s.roundTrip(ctx, http.MethodGet, "/previous", url.Values{"archive-name": {archiveName}}, nil)
+}
+
+// Finish uploads the manifest, commits the snapshot and closes the
+// connection. The session is unusable afterwards.
+func (s *BackupSession) Finish(ctx context.Context) error {
+	s.mu.Lock()
+	if s.finished {
+		s.mu.Unlock()
+		return fmt.Errorf("pbs: session already finished")
+	}
+	manifest := backupManifest{
+		BackupID:    s.ref.ID,
+		BackupTime:  s.ref.Time.Unix(),
+		BackupType:  s.ref.Type,
+		Files:       s.files,
+		Unprotected: map[string]any{},
+	}
+	s.mu.Unlock()
+
+	data, err := json.Marshal(manifest)
+	if err != nil {
+		return fmt.Errorf("pbs: encoding manifest: %w", err)
+	}
+	// The manifest blob is stored uncompressed, matching the reference
+	// clients.
+	if err := s.UploadBlob(ctx, NewBlobEncoder(), "index.json.blob", data, false); err != nil {
+		return err
+	}
+	if _, err := s.roundTrip(ctx, http.MethodPost, "/finish", nil, nil); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	s.finished = true
+	s.mu.Unlock()
+	return s.conn.Close()
+}
+
+// Abort closes the connection without committing; the server discards the
+// unfinished snapshot.
+func (s *BackupSession) Abort() error {
+	s.mu.Lock()
+	s.finished = true
+	s.mu.Unlock()
+	return s.conn.Close()
+}
