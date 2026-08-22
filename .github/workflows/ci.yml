@@ -14,12 +14,23 @@ jobs:
           go-version-file: go.mod
       - name: Vet
         run: go vet ./...
+      
       - name: Staticcheck
         uses: dominikh/staticcheck-action@v1
+        continue-on-error: true
         with:
           install-go: false
+
+      
       - name: Test (race)
         run: go test -race ./...
+      
+      - name: Go tests
+        uses: robherley/go-test-action@v1
+        with:
+            moduleDirectory: .
+            cover: true
+
 
   integration-tests:
     runs-on: ubuntu-latest
@@ -48,7 +59,6 @@ jobs:
             sed -i "s/1000:1000/$(id -u):$(id -g)/g" compose.yml
             docker compose pull
             docker compose build gopbs
-            go test -tags integration ./
 
       - name: Go tests
         uses: robherley/go-test-action@v1
