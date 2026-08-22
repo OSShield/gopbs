@@ -10,9 +10,9 @@ import (
 )
 
 // payloadSource is the seam between the emitter and payload I/O. The
-// synchronous source opens files inline; the async source (phase 5) will
-// hand out prefetched buffers from the worker pool. In both cases open
-// happens at dispatch time and binds the payload size the archive commits to.
+// synchronous source opens files inline; the async source hands out
+// prefetched buffers from the worker pool. In both cases open happens
+// at dispatch time and binds the payload size the archive commits to.
 type payloadSource interface {
 	open(n *scan.Node) (payload, error)
 }

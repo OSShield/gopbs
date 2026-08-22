@@ -188,7 +188,14 @@ func (s *BackupSession) roundTrip(ctx context.Context, method, path string, quer
 		return nil, fmt.Errorf("pbs: %s %s: reading response: %w", method, path, err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		if resp.StatusCode == http.StatusNotFound && path == "/previous" {
+		// "No previous backup" is not an error condition. The real server
+		// reports it as 400 "no valid previous backup"; pmoxs3backuproxy
+		// uses a plain 404.
+		// TODO: Open PR?
+		if path == "/previous" &&
+			(resp.StatusCode == http.StatusNotFound ||
+				(resp.StatusCode == http.StatusBadRequest &&
+					strings.Contains(string(respBody), "no valid previous backup"))) {
 			return nil, ErrNoPrevious
 		}
 		return nil, fmt.Errorf("pbs: %s %s: %s: %s",
@@ -198,11 +205,16 @@ func (s *BackupSession) roundTrip(ctx context.Context, method, path string, quer
 }
 
 // CreateDynamicIndex opens a dynamic-index writer for the named archive
-// (e.g. "root.pxar.didx") and returns its writer id. Parameters travel in
-// the query string, matching the canonical client's wire format.
+// (e.g. "root.pxar.didx") and returns its writer id.
+// Currently, parameters are sent via query string (pmoxs3backupproxy) and JSON body (proxmox-backup-server)
+// PBS ignores the query parameter, so all is good for now, but this might cause issues in the future.
 func (s *BackupSession) CreateDynamicIndex(ctx context.Context, name string) (uint64, error) {
+	body, err := json.Marshal(map[string]string{"archive-name": name})
+	if err != nil {
+		return 0, fmt.Errorf("pbs: %w", err)
+	}
 	resp, err := s.roundTrip(ctx, http.MethodPost, "/dynamic_index",
-		url.Values{"archive-name": {name}}, nil)
+		url.Values{"archive-name": {name}}, body)
 	if err != nil {
 		return 0, err
 	}
@@ -244,13 +256,23 @@ func (s *BackupSession) AppendDynamicIndex(ctx context.Context, wid uint64, dige
 // over per-chunk LE end-offset ‖ digest), size the total byte count,
 // chunkCount the number of index entries.
 func (s *BackupSession) CloseDynamicIndex(ctx context.Context, wid uint64, csum [32]byte, size, chunkCount uint64) error {
+	// Dual-encoded for the same reason as CreateDynamicIndex.
 	query := url.Values{
 		"wid":         {strconv.FormatUint(wid, 10)},
 		"csum":        {hex.EncodeToString(csum[:])},
 		"size":        {strconv.FormatUint(size, 10)},
 		"chunk-count": {strconv.FormatUint(chunkCount, 10)},
 	}
-	if _, err := s.roundTrip(ctx, http.MethodPost, "/dynamic_close", query, nil); err != nil {
+	body, err := json.Marshal(map[string]any{
+		"wid":         wid,
+		"csum":        hex.EncodeToString(csum[:]),
+		"size":        size,
+		"chunk-count": chunkCount,
+	})
+	if err != nil {
+		return fmt.Errorf("pbs: %w", err)
+	}
+	if _, err := s.roundTrip(ctx, http.MethodPost, "/dynamic_close", query, body); err != nil {
 		return err
 	}
 

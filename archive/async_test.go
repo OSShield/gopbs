@@ -99,7 +99,7 @@ func maskRootMtime(data []byte) []byte {
 	return data
 }
 
-// The phase gate: async output must be byte-identical to sync output across
+// Async output must be byte-identical to sync output across
 // randomized trees, worker counts, and buffer budgets (including a tiny
 // budget that forces head-of-line priority in the chunk pool).
 func TestAsyncEqualsSync(t *testing.T) {

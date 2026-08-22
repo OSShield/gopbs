@@ -4,17 +4,26 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/scheiblingco/gopbs/catalog"
 	"github.com/scheiblingco/gopbs/scan"
 )
 
 // CatalogEntryName returns the name the catalog's top-level entry carries:
-// the archive's dynamic index name.
+// the archive's dynamic index name. It must match the name the pxar index is
+// uploaded under, or PBS's snapshot browser resolves nothing. Options.Name
+// may be a plain name ("root"), an archive name ("root.pxar"), or the full
+// index name ("root.pxar.didx"); the suffix is completed as needed.
 func (a *Archive) CatalogEntryName() string {
 	name := a.opts.Name
-	if name == "" {
-		name = "backup"
+	switch {
+	case name == "":
+		return "backup.pxar.didx"
+	case strings.HasSuffix(name, ".didx"):
+		return name
+	case strings.HasSuffix(name, ".pxar"):
+		return name + ".didx"
 	}
 	return name + ".pxar.didx"
 }

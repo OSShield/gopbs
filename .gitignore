@@ -45,3 +45,5 @@ __debug*
 
 /*.md
 !README.md
+
+local-only/

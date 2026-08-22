@@ -226,9 +226,19 @@ func (m *mockPBS) handleH2(w http.ResponseWriter, r *http.Request) {
 
 	switch r.Method + " " + r.URL.Path {
 	case "POST /dynamic_index":
+		// The proxmox-S3-server we use for testing has a slightly different API than the real server
+		// We have to send the archive name both ways for it to accept the request.
+		// TODO: Open a pull request for this to be fixed
 		name := r.URL.Query().Get("archive-name")
 		if name == "" {
 			httpError(w, 400, "create without archive-name query parameter")
+			return
+		}
+		var fromBody struct {
+			Name string `json:"archive-name"`
+		}
+		if err := json.Unmarshal(body, &fromBody); err != nil || fromBody.Name != name {
+			httpError(w, 400, "create body %q does not carry matching archive-name", body)
 			return
 		}
 		in := struct{ Name string }{name}
@@ -289,6 +299,18 @@ func (m *mockPBS) handleH2(w http.ResponseWriter, r *http.Request) {
 		}
 		if in.ChunkCount, perr = strconv.ParseUint(q.Get("chunk-count"), 10, 64); perr != nil {
 			httpError(w, 400, "close without chunk-count query parameter")
+			return
+		}
+		var fromBody struct {
+			WID        uint64 `json:"wid"`
+			Csum       string `json:"csum"`
+			Size       uint64 `json:"size"`
+			ChunkCount uint64 `json:"chunk-count"`
+		}
+		if err := json.Unmarshal(body, &fromBody); err != nil ||
+			fromBody.WID != in.WID || fromBody.Csum != in.Csum ||
+			fromBody.Size != in.Size || fromBody.ChunkCount != in.ChunkCount {
+			httpError(w, 400, "close body %q does not match query parameters", body)
 			return
 		}
 		m.mu.Lock()
