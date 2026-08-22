@@ -12,9 +12,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
+	gopbs "github.com/scheiblingco/gopbs"
 	"github.com/scheiblingco/gopbs/archive"
 	"github.com/scheiblingco/gopbs/chunker"
 	"github.com/scheiblingco/gopbs/pbs"
@@ -231,4 +233,80 @@ func appendAll(ctx context.Context, sess *pbs.BackupSession, wid uint64, chunks 
 		}
 	}
 	return nil
+}
+
+// TestBackupOrchestrator is the phase-9 gate: one gopbs.Backup call against
+// the pmoxs3 stack, restored with the official proxmox-backup-client and
+// compared against the source tree; a second run must deduplicate fully.
+func TestBackupOrchestrator(t *testing.T) {
+	startPBSStack(t)
+	ctx := context.Background()
+
+	opts := gopbs.BackupOptions{
+		Client: pbs.Config{
+			BaseURL:      pmoxURL,
+			Auth:         pbs.PasswordAuth{Username: pmoxUser, Realm: pmoxRealm, Password: pmoxSecret},
+			Fingerprint:  pmoxFingerprint,
+			Datastore:    pmoxDatastore,
+			Workers:      4,
+			ChunkSizeAvg: 128 << 10,
+		},
+		Archive: archive.Options{Name: "root"},
+		Ref:     pbs.SnapshotRef{Type: "host", ID: fmt.Sprintf("gopbs-e2e-%d", time.Now().UnixNano())},
+		Paths:   []string{sourceDir},
+	}
+
+	// First backup (retried while the stack comes up).
+	var (
+		result *gopbs.BackupResult
+		err    error
+	)
+	deadline := time.Now().Add(90 * time.Second)
+	for {
+		result, err = gopbs.Backup(ctx, opts)
+		if err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("backup did not succeed in time: %v", err)
+		}
+		time.Sleep(2 * time.Second)
+	}
+	if result.Archive.ChunkCount == 0 || result.Archive.Size == 0 {
+		t.Fatalf("archive stats: %+v", result.Archive)
+	}
+	if result.Catalog.ChunkCount == 0 {
+		t.Fatalf("catalog stats: %+v", result.Catalog)
+	}
+	t.Logf("backup 1: %+v (catalog %+v)", result.Archive, result.Catalog)
+
+	// Restore with the official client and compare against the source.
+	snapshot := fmt.Sprintf("%s/%s/%s", result.Ref.Type, result.Ref.ID,
+		result.Ref.Time.UTC().Format(time.RFC3339))
+	if err := compose("run", "--rm", "--remove-orphans",
+		"-e", "SNAPSHOT="+snapshot,
+		"-e", "ARCHIVE=root.pxar",
+		"-e", "TARGET=/restore/e2e",
+		"pbsrestore"); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	equal, err := compareTrees(filepath.Join(restoreDir, "e2e"), sourceDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !equal {
+		t.Fatal("restored tree differs from source")
+	}
+
+	// Second backup of unchanged content: everything deduplicates.
+	time.Sleep(2 * time.Second) // pmoxs3 resolves "previous" at seconds granularity
+	opts.Ref.Time = time.Time{}
+	result2, err := gopbs.Backup(ctx, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("backup 2: %+v (catalog %+v)", result2.Archive, result2.Catalog)
+	if result2.Archive.NewChunks != 0 || result2.Archive.ReusedChunks != result2.Archive.ChunkCount {
+		t.Errorf("second backup should deduplicate fully: %+v", result2.Archive)
+	}
 }

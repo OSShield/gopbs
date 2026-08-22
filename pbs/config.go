@@ -39,24 +39,37 @@ type Config struct {
 	// BaseURL is the server address, e.g. "https://pbs.example.com:8007".
 	// The scheme must be https; the port defaults to 8007.
 	BaseURL string
-	Auth    Auth
+
+	Auth Auth
+
 	// Fingerprint pins the server certificate: the SHA-256 of its DER
 	// encoding as colon-separated hex (case-insensitive). When set, it is
 	// always enforced and replaces chain verification. When empty, standard
 	// chain verification applies.
 	Fingerprint string
+
 	// InsecureSkipAll disables certificate verification entirely. For lab
 	// use only; Fingerprint is the supported way to trust a self-signed
 	// server.
 	InsecureSkipAll bool
-	Datastore       string
-	Namespace       string // optional
+
+	Datastore string
+
+	Namespace string // optional
+
 	// Workers is the number of in-flight chunk uploads (phase-8 pipeline);
 	// 0 = 4.
 	Workers int
+
 	// ChunkSizeAvg is the content-defined chunking target; 0 = 4 MiB.
 	// Must be a power of two.
 	ChunkSizeAvg uint64
+
+	// OnUploadProgress, when set, is called by the upload pipeline as chunks
+	// are committed to an index, in stream order (Stats.Size grows
+	// monotonically), and once more with done=true after the index closed.
+	// Called from the uploading goroutine; keep it fast.
+	OnUploadProgress func(archiveName string, stats UploadStats, done bool)
 }
 
 // SnapshotRef identifies the snapshot a backup session writes.

@@ -60,6 +60,8 @@ type mockPBS struct {
 	nextWID     uint64
 	indexes     map[uint64]*mockIndex
 	chunks      map[string][]byte // digest hex -> plaintext
+	known       map[string]bool   // uploaded or registered via /previous
+	chunkDelay  func(digestHex string) time.Duration
 	blobs       map[string][]byte // file name -> decoded payload
 	previous    map[string][]byte // archive name -> raw didx
 	finished    bool
@@ -107,6 +109,7 @@ func newMockPBS(t *testing.T) *mockPBS {
 		nextWID:     1,
 		indexes:     make(map[uint64]*mockIndex),
 		chunks:      make(map[string][]byte),
+		known:       make(map[string]bool),
 		blobs:       make(map[string][]byte),
 		previous:    make(map[string][]byte),
 		failPath:    make(map[string]int),
@@ -271,7 +274,7 @@ func (m *mockPBS) handleH2(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		for _, d := range in.Digests {
-			if _, ok := m.chunks[d]; !ok {
+			if !m.known[d] {
 				httpError(w, 400, "append references unknown chunk %s", d)
 				return
 			}
@@ -328,6 +331,12 @@ func (m *mockPBS) handleH2(w http.ResponseWriter, r *http.Request) {
 
 	case "POST /dynamic_chunk":
 		q := r.URL.Query()
+		m.mu.Lock()
+		delay := m.chunkDelay
+		m.mu.Unlock()
+		if delay != nil {
+			time.Sleep(delay(q.Get("digest")))
+		}
 		plain, err := m.decodeBlob(body)
 		if err != nil {
 			httpError(w, 400, "chunk: %v", err)
@@ -348,6 +357,7 @@ func (m *mockPBS) handleH2(w http.ResponseWriter, r *http.Request) {
 		}
 		m.mu.Lock()
 		m.chunks[q.Get("digest")] = plain
+		m.known[q.Get("digest")] = true
 		m.mu.Unlock()
 
 	case "POST /blob":
@@ -368,6 +378,13 @@ func (m *mockPBS) handleH2(w http.ResponseWriter, r *http.Request) {
 	case "GET /previous":
 		m.mu.Lock()
 		data, ok := m.previous[r.URL.Query().Get("archive-name")]
+		if ok {
+			// Like the real server, downloading the previous index makes
+			// its chunks known to the session.
+			for i := 4096; i+40 <= len(data); i += 40 {
+				m.known[hex.EncodeToString(data[i+8:i+40])] = true
+			}
+		}
 		m.mu.Unlock()
 		if !ok {
 			httpError(w, 404, "no previous backup")

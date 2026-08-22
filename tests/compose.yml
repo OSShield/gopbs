@@ -54,6 +54,29 @@ services:
       - ./.test-pxar:/pxar:ro
       - ./.test-restore:/restore:rw
 
+  # One-off restore of a snapshot from the pmoxs3 stack with the official
+  # proxmox-backup-client; SNAPSHOT/ARCHIVE/TARGET come from `compose run -e`.
+  # Runs as root: restoring ownership (e.g. the uid/gid-0 virtual root and
+  # stream entries) needs it; the chmod afterwards lets the host user clean up.
+  pbsrestore:
+    user: 0:0
+    build:
+      context: .
+      dockerfile: pbs.Dockerfile
+    entrypoint: ""
+    environment:
+      HOME: /tmp
+      PBS_PASSWORD: garagegaragegarage
+      PBS_FINGERPRINT: "55:BC:29:4B:BA:B6:A1:03:42:A9:D8:51:14:9D:BD:00:D2:2A:9C:A1:B8:4A:85:E1:AF:B2:0C:48:40:D6:CC:A4"
+    command:
+      - bash
+      - -ec
+      - |
+        proxmox-backup-client restore "$$SNAPSHOT" "$$ARCHIVE" "$$TARGET" --repository garagegarage@pbs@pmoxs3:pbs
+        chmod -R a+rwX "$$TARGET"
+    volumes:
+      - ./.test-restore:/restore:rw
+
   garage:
     image: dxflrs/garage:v2.3.0
     container_name: garage

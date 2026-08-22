@@ -1,13 +1,9 @@
-// Command backup-async backs up a directory to Proxmox Backup Server using
-// asynchronous archive generation (the library default): the tree layout is
-// planned first, then a pool of workers reads file contents in parallel and
-// the archive stream is reassembled in order — byte-identical to synchronous
-// output, typically many times faster on trees with many files.
-//
-// It deduplicates against the previous snapshot of the same backup id
-// (chunks already known to the server are registered without re-uploading)
-// and uploads the .pcat1 catalog alongside the archive so the snapshot is
-// browsable in the PBS UI.
+// Command backup-async backs up a directory to Proxmox Backup Server with a
+// single gopbs.Backup call, using asynchronous archive generation (the
+// library default): the tree layout is planned first, then a pool of workers
+// reads file contents in parallel while the stream is chunked, deduplicated
+// against the previous snapshot, and uploaded concurrently. The .pcat1
+// catalog is included so the snapshot is browsable in the PBS UI.
 //
 // The flag defaults match the test stack in tests/compose.yml:
 //
@@ -17,19 +13,15 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/binary"
-	"encoding/hex"
-	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"log"
 	"os"
+	"strings"
 	"time"
 
+	"github.com/scheiblingco/gopbs"
 	"github.com/scheiblingco/gopbs/archive"
-	"github.com/scheiblingco/gopbs/chunker"
 	"github.com/scheiblingco/gopbs/pbs"
 	"github.com/scheiblingco/gopbs/scan"
 )
@@ -49,164 +41,62 @@ func main() {
 	)
 	flag.Parse()
 
-	if err := run(*url, *username, *realm, *password, *fingerprint, *datastore, *source, *name, *backupID, *workers); err != nil {
+	started := time.Now()
+	result, err := gopbs.Backup(context.Background(), gopbs.BackupOptions{
+		Client: pbs.Config{
+			BaseURL:     *url,
+			Auth:        pbs.PasswordAuth{Username: *username, Realm: *realm, Password: *password},
+			Fingerprint: *fingerprint,
+			Datastore:   *datastore,
+		},
+		Archive: archive.Options{
+			Name:    *name,
+			Workers: *workers, // 0 = asynchronous generation with GOMAXPROCS workers
+			Scan:    scan.Options{SkipOnError: true},
+			OnWarn: func(w archive.Warning) {
+				fmt.Fprintf(os.Stderr, "warning: %s (kind %d, err %v)\n", w.Path, w.Kind, w.Err)
+			},
+		},
+		Ref:        pbs.SnapshotRef{Type: "host", ID: *backupID},
+		Paths:      []string{*source},
+		OnProgress: progressBar(),
+	})
+	if err != nil {
 		log.Fatal(err)
 	}
+
+	fmt.Printf("backed up %s as %s/%s/%s: %d bytes in %d chunks (%d uploaded, %d deduplicated) in %.1fs\n",
+		*source, result.Ref.Type, result.Ref.ID, result.Ref.Time.UTC().Format(time.RFC3339),
+		result.Archive.Size, result.Archive.ChunkCount,
+		result.Archive.NewChunks, result.Archive.ReusedChunks,
+		time.Since(started).Seconds())
 }
 
-func run(url, username, realm, password, fingerprint, datastore, source, name, backupID string, workers int) error {
-	ctx := context.Background()
-	started := time.Now()
-
-	client, err := pbs.NewClient(pbs.Config{
-		BaseURL:     url,
-		Auth:        pbs.PasswordAuth{Username: username, Realm: realm, Password: password},
-		Fingerprint: fingerprint,
-		Datastore:   datastore,
-	})
-	if err != nil {
-		return err
-	}
-
-	// Workers: 0 selects asynchronous generation with GOMAXPROCS workers —
-	// sizes are bound as files are opened, contents prefetched in parallel,
-	// and the stream comes out in exact archive order. Name feeds the
-	// catalog's top-level entry, which must match the uploaded index name.
-	arch, err := archive.New(archive.Options{
-		Name:    name,
-		Workers: workers,
-		Scan:    scan.Options{SkipOnError: true},
-		OnWarn: func(w archive.Warning) {
-			fmt.Fprintf(os.Stderr, "warning: %s (kind %d, err %v)\n", w.Path, w.Kind, w.Err)
-		},
-	})
-	if err != nil {
-		return err
-	}
-	if err := arch.AddDirectory(source); err != nil {
-		return err
-	}
-
-	sess, err := client.StartBackup(ctx, pbs.SnapshotRef{Type: "host", ID: backupID})
-	if err != nil {
-		return err
-	}
-	defer sess.Abort() // no-op after a successful Finish
-
-	indexName := name + ".pxar.didx"
-
-	// Seed the dedup set from the previous snapshot of this backup id. The
-	// download also registers those chunks with the session, so they may be
-	// referenced without re-uploading. Chunks are content-addressed in the
-	// datastore, so one set serves the archive and the catalog alike.
-	up := &uploader{sess: sess, enc: pbs.NewBlobEncoder(), known: make(map[[32]byte]bool)}
-	switch raw, err := sess.DownloadPrevious(ctx, indexName); {
-	case err == nil:
-		entries, err := pbs.ParseDynamicIndex(raw)
-		if err != nil {
-			return err
+// progressBar returns an OnProgress callback rendering a live bar on stderr.
+func progressBar() func(gopbs.Progress) {
+	var last time.Time
+	return func(p gopbs.Progress) {
+		if !p.Done && time.Since(last) < 100*time.Millisecond {
+			return
 		}
-		for _, e := range entries {
-			up.known[e.Digest] = true
-		}
-		fmt.Printf("previous snapshot: %d known chunks\n", len(up.known))
-	case errors.Is(err, pbs.ErrNoPrevious):
-		fmt.Println("no previous snapshot: full upload")
-	default:
-		return err
-	}
-
-	stream, err := arch.GenerateV1(ctx)
-	if err != nil {
-		return err
-	}
-	defer stream.Close()
-	total, count, err := up.uploadIndex(ctx, indexName, stream)
-	if err != nil {
-		return err
-	}
-
-	// The .pcat1 catalog makes the snapshot browsable in the PBS UI.
-	catStream, err := arch.GenerateCatalog(ctx)
-	if err != nil {
-		return err
-	}
-	defer catStream.Close()
-	if _, _, err := up.uploadIndex(ctx, "catalog.pcat1.didx", catStream); err != nil {
-		return err
-	}
-
-	if err := sess.Finish(ctx); err != nil {
-		return err
-	}
-
-	fmt.Printf("backed up %s: %d bytes in %d chunks (%d uploaded, %d deduplicated) as %s (%.1fs)\n",
-		source, total, count, up.uploaded, up.reused, indexName, time.Since(started).Seconds())
-	return nil
-}
-
-// uploader streams data into one dynamic index at a time: chunk, dedup,
-// upload, append in batches of 128, close with the index checksum.
-type uploader struct {
-	sess     *pbs.BackupSession
-	enc      *pbs.BlobEncoder
-	known    map[[32]byte]bool
-	uploaded uint64
-	reused   uint64
-}
-
-func (u *uploader) uploadIndex(ctx context.Context, indexName string, r io.Reader) (total, count uint64, err error) {
-	wid, err := u.sess.CreateDynamicIndex(ctx, indexName)
-	if err != nil {
-		return 0, 0, err
-	}
-
-	var (
-		csum    = sha256.New()
-		digests []string
-		offsets []uint64
-	)
-	flush := func() error {
-		if len(digests) == 0 {
-			return nil
-		}
-		if err := u.sess.AppendDynamicIndex(ctx, wid, digests, offsets); err != nil {
-			return err
-		}
-		digests, offsets = digests[:0], offsets[:0]
-		return nil
-	}
-	for chunk, err := range chunker.Split(r, 0) { // 0 = the 4 MiB PBS default
-		if err != nil {
-			return 0, 0, err
-		}
-		digest := sha256.Sum256(chunk.Data)
-		if u.known[digest] {
-			u.reused++
+		last = time.Now()
+		if p.Total > 0 {
+			frac := float64(p.Stats.Size) / float64(p.Total)
+			if frac > 1 {
+				frac = 1
+			}
+			const width = 30
+			fmt.Fprintf(os.Stderr, "\r%-22s [%-30s] %5.1f%% %9s / %-9s new %d reused %d ",
+				p.Archive, strings.Repeat("=", int(frac*width)), frac*100,
+				mib(p.Stats.Size), mib(p.Total), p.Stats.NewChunks, p.Stats.ReusedChunks)
 		} else {
-			if err := u.sess.UploadDynamicChunk(ctx, u.enc, wid, digest, chunk.Data); err != nil {
-				return 0, 0, err
-			}
-			u.known[digest] = true // dedup within this backup too
-			u.uploaded++
+			fmt.Fprintf(os.Stderr, "\r%-22s %9s  new %d reused %d ",
+				p.Archive, mib(p.Stats.Size), p.Stats.NewChunks, p.Stats.ReusedChunks)
 		}
-		digests = append(digests, hex.EncodeToString(digest[:]))
-		offsets = append(offsets, chunk.Offset)
-		total = chunk.Offset + uint64(len(chunk.Data))
-		count++
-		binary.Write(csum, binary.LittleEndian, total)
-		csum.Write(digest[:])
-		if len(digests) == 128 {
-			if err := flush(); err != nil {
-				return 0, 0, err
-			}
+		if p.Done {
+			fmt.Fprintln(os.Stderr)
 		}
 	}
-	if err := flush(); err != nil {
-		return 0, 0, err
-	}
-
-	var csumArr [32]byte
-	copy(csumArr[:], csum.Sum(nil))
-	return total, count, u.sess.CloseDynamicIndex(ctx, wid, csumArr, total, count)
 }
+
+func mib(b uint64) string { return fmt.Sprintf("%.1f MiB", float64(b)/(1<<20)) }

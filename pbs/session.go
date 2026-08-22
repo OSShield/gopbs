@@ -41,6 +41,8 @@ type BackupSession struct {
 	cc     *http2.ClientConn
 	ref    SnapshotRef
 
+	known *chunkSet // session-wide dedup registry (see upload.go)
+
 	mu       sync.Mutex
 	files    []manifestFile
 	byWID    map[uint64]int // writer id -> index into files
@@ -107,9 +109,14 @@ func (c *Client) StartBackup(ctx context.Context, ref SnapshotRef) (*BackupSessi
 		conn:   conn,
 		cc:     cc,
 		ref:    ref,
+		known:  newChunkSet(),
 		byWID:  make(map[uint64]int),
 	}, nil
 }
+
+// Ref returns the snapshot identity this session writes, with all defaults
+// resolved (the exact values a restore later addresses).
+func (s *BackupSession) Ref() SnapshotRef { return s.ref }
 
 // upgrade performs the HTTP/1.1 101 handshake and returns the raw connection
 // (with any bytes the server sent after the 101 preserved).
@@ -327,9 +334,20 @@ func (s *BackupSession) UploadBlob(ctx context.Context, enc *BlobEncoder, filena
 
 // DownloadPrevious fetches the previous snapshot's raw index for the named
 // archive, for chunk deduplication. Returns ErrNoPrevious when this is the
-// first backup.
+// first backup. Digests of a well-formed index are registered with the
+// session's dedup set as a side effect (the server registers them as known
+// to the session at the same time).
 func (s *BackupSession) DownloadPrevious(ctx context.Context, archiveName string) ([]byte, error) {
-	return s.roundTrip(ctx, http.MethodGet, "/previous", url.Values{"archive-name": {archiveName}}, nil)
+	raw, err := s.roundTrip(ctx, http.MethodGet, "/previous", url.Values{"archive-name": {archiveName}}, nil)
+	if err != nil {
+		return nil, err
+	}
+	if entries, err := ParseDynamicIndex(raw); err == nil {
+		for _, e := range entries {
+			s.known.seed(e.Digest)
+		}
+	}
+	return raw, nil
 }
 
 // Finish uploads the manifest, commits the snapshot and closes the
