@@ -8,14 +8,17 @@ chunk -> deduplicate -> upload -> catalog -> manifest -> finish, fully streamed.
 | [backup-sync](backup-sync/) | Fully synchronous generation (`Archive.Workers: 1`). |
 | [backup-async](backup-async/) | Asynchronous generation (the default): parallel payload reads reassembled in order — byte-identical output, much faster on many-file trees. |
 | [backup-streams](backup-streams/) | Multiple streams of data — virtual files that exist nowhere on disk — under a virtual root: buffered generated content, file-backed streams, and pure readers of pre-known size. |
+| [backup-v2](backup-v2/) | v2 split archives (`Format: gopbs.FormatV2`): metadata and payload streams uploaded concurrently as two indexes — metadata-only changes leave the payload stream fully deduplicated. Restore needs proxmox-backup-client ≥ 3.2. |
 
-Both default to backing up `/tmp` against the docker test stack from
-[tests/compose.yml](../tests/compose.yml):
+All of them default to the docker test stack from
+[tests/compose.yml](../tests/compose.yml) (the directory-based ones back up
+`/tmp`):
 
 ```sh
 cd tests && docker compose up -d garage pmoxs3 && cd ..
 go run ./examples/backup-sync
 go run ./examples/backup-async     # run twice (a couple of seconds apart) to see dedup at work
+go run ./examples/backup-v2        # split mpxar/ppxar upload
 ```
 
 Point them at a real server with `-url`, `-username`, `-realm`, `-password`,

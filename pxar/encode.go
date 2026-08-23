@@ -235,3 +235,38 @@ func SizePayload(size uint64) uint64 { return HeaderSize + size }
 func AppendPayloadHeader(dst []byte, size uint64) []byte {
 	return appendHeader(dst, TypePayload, SizePayload(size))
 }
+
+// FormatVersionSize is the full encoded size of a TypeFormatVersion record.
+const FormatVersionSize = HeaderSize + 8
+
+// AppendFormatVersion encodes the format version record that opens a v2
+// metadata stream (version 1 is expressed by the record's absence).
+func AppendFormatVersion(dst []byte, version uint64) []byte {
+	dst = appendHeader(dst, TypeFormatVersion, FormatVersionSize)
+	return binary.LittleEndian.AppendUint64(dst, version)
+}
+
+// PayloadRefSize is the full encoded size of a TypePayloadRef record.
+const PayloadRefSize = HeaderSize + 16
+
+// AppendPayloadRef encodes a v2 payload reference: offset addresses the
+// payload record's *header* in the payload stream, size is the content byte
+// count (the referenced record's length minus its header).
+func AppendPayloadRef(dst []byte, offset, size uint64) []byte {
+	dst = appendHeader(dst, TypePayloadRef, PayloadRefSize)
+	dst = binary.LittleEndian.AppendUint64(dst, offset)
+	return binary.LittleEndian.AppendUint64(dst, size)
+}
+
+// MarkerSize is the encoded size of the bare-header payload stream markers.
+const MarkerSize = HeaderSize
+
+// AppendPayloadStartMarker encodes the record that opens a payload stream.
+func AppendPayloadStartMarker(dst []byte) []byte {
+	return appendHeader(dst, PayloadStartMarker, MarkerSize)
+}
+
+// AppendPayloadTailMarker encodes the record that closes a payload stream.
+func AppendPayloadTailMarker(dst []byte) []byte {
+	return appendHeader(dst, PayloadTailMarker, MarkerSize)
+}

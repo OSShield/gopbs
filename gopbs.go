@@ -30,7 +30,10 @@ type Format int
 const (
 	// FormatV1 is the classic single-stream pxar plus a .pcat1 catalog.
 	FormatV1 Format = iota
-	// FormatV2 is the split .mpxar/.ppxar format (not implemented yet).
+	// FormatV2 is the split format: a metadata stream (.mpxar) and a payload
+	// stream (.ppxar) uploaded as two dynamic indexes. No catalog — the
+	// metadata stream itself serves browsing. Requires proxmox-backup-client
+	// >= 3.2 to restore.
 	FormatV2
 )
 
@@ -57,12 +60,14 @@ type BackupOptions struct {
 	// BackupOptions value with streams is good for one call.
 	Streams []Stream
 	// SkipCatalog omits the .pcat1 upload (the snapshot will not be
-	// browsable in the PBS UI).
+	// browsable in the PBS UI). FormatV1 only; v2 has no catalog.
 	SkipCatalog bool
 	// OnProgress, when set, receives live upload progress: one call per
 	// committed chunk plus a final call with Done=true per index. Setting it
 	// costs one extra metadata scan (the size estimate for Total). Called
-	// from the uploading goroutine; keep it fast.
+	// from the uploading goroutine; keep it fast. FormatV2 uploads its two
+	// indexes concurrently, so calls can arrive from two goroutines at once —
+	// synchronize any shared state.
 	OnProgress func(Progress)
 }
 
@@ -96,10 +101,17 @@ type BackupResult struct {
 	// Ref is the snapshot identity as written (defaults resolved) — what a
 	// restore addresses.
 	Ref pbs.SnapshotRef
-	// ArchiveName is the uploaded index name (e.g. "root.pxar.didx").
+	// ArchiveName is the uploaded index name: "<base>.pxar.didx" for v1, the
+	// metadata stream's "<base>.mpxar.didx" for v2.
 	ArchiveName string
-	Archive     pbs.UploadStats
-	Catalog     pbs.UploadStats
+	// Archive is the pxar index's upload stats (the metadata stream's, for
+	// v2).
+	Archive pbs.UploadStats
+	// Catalog is the .pcat1 index's upload stats (v1 only).
+	Catalog pbs.UploadStats
+	// Payload is the payload stream's ("<base>.ppxar.didx") upload stats
+	// (v2 only).
+	Payload pbs.UploadStats
 	// Warnings collects the non-fatal generation events (skipped entries,
 	// padded/truncated files, torn reads).
 	Warnings []archive.Warning
@@ -108,8 +120,8 @@ type BackupResult struct {
 // Backup performs one complete backup: scan → plan → generate → chunk →
 // deduplicate → upload → catalog → manifest → finish, fully streamed.
 func Backup(ctx context.Context, opts BackupOptions) (*BackupResult, error) {
-	if opts.Format != FormatV1 {
-		return nil, fmt.Errorf("gopbs: format %d not implemented (only FormatV1)", opts.Format)
+	if opts.Format != FormatV1 && opts.Format != FormatV2 {
+		return nil, fmt.Errorf("gopbs: unknown format %d", opts.Format)
 	}
 	if len(opts.Paths) == 0 && len(opts.Streams) == 0 {
 		return nil, fmt.Errorf("gopbs: nothing to back up")
@@ -149,21 +161,30 @@ func Backup(ctx context.Context, opts BackupOptions) (*BackupResult, error) {
 		}
 	}
 
-	result.ArchiveName = arch.CatalogEntryName()
+	metaName, payloadName := pbs.SplitIndexNames(arch.CatalogEntryName())
+	if opts.Format == FormatV2 {
+		result.ArchiveName = metaName
+	} else {
+		result.ArchiveName = arch.CatalogEntryName()
+	}
 
 	clientCfg := opts.Client
 	if opts.OnProgress != nil {
-		archiveTotal, _ := arch.EstimatedSizeV1() // best effort; 0 on error
+		// Best-effort totals per index name; 0 (unknown) on estimate errors.
+		totals := make(map[string]uint64)
+		if opts.Format == FormatV2 {
+			if m, p, err := arch.EstimatedSizeV2(); err == nil {
+				totals[metaName], totals[payloadName] = uint64(m), uint64(p)
+			}
+		} else if t, err := arch.EstimatedSizeV1(); err == nil {
+			totals[result.ArchiveName] = uint64(t)
+		}
 		userProgress := clientCfg.OnUploadProgress
 		clientCfg.OnUploadProgress = func(name string, stats pbs.UploadStats, done bool) {
 			if userProgress != nil {
 				userProgress(name, stats, done)
 			}
-			p := Progress{Archive: name, Stats: stats, Done: done}
-			if name == result.ArchiveName && archiveTotal > 0 {
-				p.Total = uint64(archiveTotal)
-			}
-			opts.OnProgress(p)
+			opts.OnProgress(Progress{Archive: name, Total: totals[name], Stats: stats, Done: done})
 		}
 	}
 
@@ -178,25 +199,40 @@ func Backup(ctx context.Context, opts BackupOptions) (*BackupResult, error) {
 	defer sess.Abort() // no-op after a successful Finish
 	result.Ref = sess.Ref()
 
-	stream, err := arch.GenerateV1(ctx)
-	if err != nil {
-		return nil, err
-	}
-	result.Archive, err = sess.UploadPXARv1(ctx, result.ArchiveName, stream)
-	stream.Close()
-	if err != nil {
-		return nil, err
-	}
-
-	if !opts.SkipCatalog {
-		catStream, err := arch.GenerateCatalog(ctx)
+	switch opts.Format {
+	case FormatV2:
+		meta, payload, err := arch.GenerateV2(ctx)
 		if err != nil {
 			return nil, err
 		}
-		result.Catalog, err = sess.UploadCatalog(ctx, catStream)
-		catStream.Close()
+		result.Archive, result.Payload, err = sess.UploadPXARv2(ctx, result.ArchiveName, meta, payload)
+		meta.Close()
+		payload.Close()
 		if err != nil {
 			return nil, err
+		}
+
+	default: // FormatV1
+		stream, err := arch.GenerateV1(ctx)
+		if err != nil {
+			return nil, err
+		}
+		result.Archive, err = sess.UploadPXARv1(ctx, result.ArchiveName, stream)
+		stream.Close()
+		if err != nil {
+			return nil, err
+		}
+
+		if !opts.SkipCatalog {
+			catStream, err := arch.GenerateCatalog(ctx)
+			if err != nil {
+				return nil, err
+			}
+			result.Catalog, err = sess.UploadCatalog(ctx, catStream)
+			catStream.Close()
+			if err != nil {
+				return nil, err
+			}
 		}
 	}
 

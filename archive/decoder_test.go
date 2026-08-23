@@ -1,9 +1,10 @@
 package archive_test
 
-// A minimal pxar v1 stream decoder used to verify emitter output
-// structurally: record framing, metadata ordering, payload content, and —
-// most importantly — that every goodbye table's offsets and lengths resolve
-// exactly to the children actually emitted.
+// A minimal pxar stream decoder used to verify emitter output structurally:
+// record framing, metadata ordering, payload content, and — most importantly —
+// that every goodbye table's offsets and lengths resolve exactly to the
+// children actually emitted. Handles both v1 archives and v2 split pairs
+// (metadata stream with payload refs resolved against the payload stream).
 
 import (
 	"encoding/binary"
@@ -31,6 +32,10 @@ type decNode struct {
 	}
 	device   pxar.Device
 	children []*decNode
+
+	// gbExtra is what the parent's goodbye item adds on top of the node's
+	// metadata-stream span: the payload content size for v2 regular files.
+	gbExtra uint64
 }
 
 func (n *decNode) child(name string) *decNode {
@@ -65,16 +70,71 @@ func (n *decNode) find(path string) *decNode {
 type parser struct {
 	data []byte
 	pos  uint64
+
+	// v2 split mode: payload refs are resolved against the payload stream,
+	// which must be covered contiguously in ref order.
+	v2         bool
+	payload    []byte
+	payloadPos uint64
 }
 
 func parseArchive(data []byte) (*decNode, error) {
 	p := &parser{data: data}
-	root, err := p.node("", 0, false)
+	root, err := p.node("", 0, false, true)
 	if err != nil {
 		return nil, err
 	}
 	if p.pos != uint64(len(data)) {
 		return nil, fmt.Errorf("trailing bytes: parsed %d of %d", p.pos, len(data))
+	}
+	return root, nil
+}
+
+// parseArchiveV2 parses a split archive pair, requiring the format version
+// record, the payload stream markers, and contiguous in-order payload
+// coverage by the metadata stream's refs.
+func parseArchiveV2(meta, payload []byte) (*decNode, error) {
+	p := &parser{data: meta, v2: true, payload: payload}
+
+	typ, length, err := p.header()
+	if err != nil {
+		return nil, err
+	}
+	if typ != pxar.TypeFormatVersion || length != pxar.FormatVersionSize {
+		return nil, fmt.Errorf("expected format version record, got %#x len %d", typ, length)
+	}
+	if v := binary.LittleEndian.Uint64(p.body()); v != 2 {
+		return nil, fmt.Errorf("format version %d, want 2", v)
+	}
+
+	if uint64(len(payload)) < 2*pxar.MarkerSize {
+		return nil, fmt.Errorf("payload stream too short: %d bytes", len(payload))
+	}
+	if typ := binary.LittleEndian.Uint64(payload); typ != pxar.PayloadStartMarker {
+		return nil, fmt.Errorf("payload start marker: got %#x", typ)
+	}
+	if l := binary.LittleEndian.Uint64(payload[8:]); l != pxar.MarkerSize {
+		return nil, fmt.Errorf("payload start marker length %d", l)
+	}
+	p.payloadPos = pxar.MarkerSize
+
+	root, err := p.node("", 0, false, true)
+	if err != nil {
+		return nil, err
+	}
+	if p.pos != uint64(len(meta)) {
+		return nil, fmt.Errorf("trailing metadata bytes: parsed %d of %d", p.pos, len(meta))
+	}
+
+	tail := p.payloadPos
+	if typ := binary.LittleEndian.Uint64(payload[tail:]); typ != pxar.PayloadTailMarker {
+		return nil, fmt.Errorf("payload tail marker at %d: got %#x", tail, typ)
+	}
+	if l := binary.LittleEndian.Uint64(payload[tail+8:]); l != pxar.MarkerSize {
+		return nil, fmt.Errorf("payload tail marker length %d", l)
+	}
+	if tail+pxar.MarkerSize != uint64(len(payload)) {
+		return nil, fmt.Errorf("trailing payload bytes: refs cover %d of %d", tail+pxar.MarkerSize, len(payload))
 	}
 	return root, nil
 }
@@ -99,7 +159,7 @@ func (p *parser) body() []byte {
 	return body
 }
 
-func (p *parser) node(name string, start uint64, mayHardlink bool) (*decNode, error) {
+func (p *parser) node(name string, start uint64, mayHardlink, isRoot bool) (*decNode, error) {
 	n := &decNode{name: name, start: start}
 
 	typ, _, err := p.header()
@@ -162,7 +222,13 @@ meta_done:
 			if typ == pxar.TypeGoodbye {
 				goodbyeStart := p.pos
 				body := p.body()
-				if err := verifyGoodbye(body, positions, entryStart, goodbyeStart); err != nil {
+				// The v2 root tail marker points at the very start of the
+				// stream (the format version record), not the root entry.
+				tailTarget := entryStart
+				if p.v2 && isRoot {
+					tailTarget = 0
+				}
+				if err := verifyGoodbye(body, positions, tailTarget, goodbyeStart); err != nil {
 					return nil, fmt.Errorf("dir %q: %w", name, err)
 				}
 				return n, nil
@@ -172,18 +238,42 @@ meta_done:
 			}
 			childStart := p.pos
 			fname := p.body()
-			child, err := p.node(string(fname[:len(fname)-1]), childStart, true)
+			child, err := p.node(string(fname[:len(fname)-1]), childStart, true, false)
 			if err != nil {
 				return nil, err
 			}
 			n.children = append(n.children, child)
-			positions = append(positions, childPos{child.name, childStart, p.pos - childStart})
+			positions = append(positions, childPos{child.name, childStart, p.pos - childStart + child.gbExtra})
 		}
 
 	case scan.ModeRegular:
 		typ, _, err := p.header()
 		if err != nil {
 			return nil, err
+		}
+		if p.v2 {
+			if typ != pxar.TypePayloadRef {
+				return nil, fmt.Errorf("file %q: expected payload ref, got %#x", name, typ)
+			}
+			body := p.body()
+			offset := binary.LittleEndian.Uint64(body)
+			size := binary.LittleEndian.Uint64(body[8:])
+			if offset != p.payloadPos {
+				return nil, fmt.Errorf("file %q: ref offset %d, next payload record at %d", name, offset, p.payloadPos)
+			}
+			if offset+pxar.HeaderSize+size > uint64(len(p.payload)) {
+				return nil, fmt.Errorf("file %q: ref %d+%d beyond payload stream (%d)", name, offset, size, len(p.payload))
+			}
+			if typ := binary.LittleEndian.Uint64(p.payload[offset:]); typ != pxar.TypePayload {
+				return nil, fmt.Errorf("file %q: ref resolves to record %#x", name, typ)
+			}
+			if l := binary.LittleEndian.Uint64(p.payload[offset+8:]); l != pxar.HeaderSize+size {
+				return nil, fmt.Errorf("file %q: ref size %d, payload record length %d", name, size, l)
+			}
+			n.content = p.payload[offset+pxar.HeaderSize : offset+pxar.HeaderSize+size]
+			n.gbExtra = size
+			p.payloadPos = offset + pxar.HeaderSize + size
+			return n, nil
 		}
 		if typ != pxar.TypePayload {
 			return nil, fmt.Errorf("file %q: expected payload, got %#x", name, typ)
@@ -231,9 +321,9 @@ type childPos struct {
 }
 
 // verifyGoodbye checks that a goodbye record's items map one-to-one onto the
-// emitted children and that the tail marker points back at the directory's
-// entry record.
-func verifyGoodbye(body []byte, children []childPos, entryStart, goodbyeStart uint64) error {
+// emitted children and that the tail marker points back at tailTarget (the
+// directory's entry record; the stream start for the v2 root).
+func verifyGoodbye(body []byte, children []childPos, tailTarget, goodbyeStart uint64) error {
 	if len(body)%24 != 0 || len(body) == 0 {
 		return fmt.Errorf("goodbye body length %d", len(body))
 	}
@@ -270,8 +360,8 @@ func verifyGoodbye(body []byte, children []childPos, entryStart, goodbyeStart ui
 	if h := binary.LittleEndian.Uint64(body[tailOff:]); h != pxar.GoodbyeTailMarker {
 		return fmt.Errorf("tail marker hash %#x", h)
 	}
-	if off := binary.LittleEndian.Uint64(body[tailOff+8:]); goodbyeStart-off != entryStart {
-		return fmt.Errorf("tail offset resolves to %d, entry at %d", goodbyeStart-off, entryStart)
+	if off := binary.LittleEndian.Uint64(body[tailOff+8:]); goodbyeStart-off != tailTarget {
+		return fmt.Errorf("tail offset resolves to %d, want %d", goodbyeStart-off, tailTarget)
 	}
 	if l := binary.LittleEndian.Uint64(body[tailOff+16:]); l != uint64(len(body))+pxar.HeaderSize {
 		return fmt.Errorf("tail length %d, record is %d", l, len(body)+pxar.HeaderSize)

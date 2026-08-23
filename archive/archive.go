@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"runtime"
+	"sync"
 	"time"
 
 	"github.com/scheiblingco/gopbs/scan"
@@ -223,7 +224,7 @@ func (a *Archive) GenerateV1(ctx context.Context) (io.ReadCloser, error) {
 		var src payloadSource = syncSource{}
 		var async *asyncSource
 		if workers > 1 {
-			async = newAsyncSource(genCtx, collectPayloads(root, nil), workers, a.opts.Buffer)
+			async = newAsyncSource(genCtx, collectPayloads(root, nil), workers, a.opts.Buffer, nil)
 		}
 		if async != nil {
 			src = async
@@ -253,6 +254,89 @@ func (a *Archive) EstimatedSizeV1() (int64, error) {
 		return 0, err
 	}
 	return int64(estimateV1(root, true)), nil
+}
+
+// GenerateV2 builds the node tree and returns the split v2 archive as two
+// streams: the metadata stream (.mpxar) and the payload stream (.ppxar).
+// Both derive from one plan and are generated concurrently; the caller must
+// consume them concurrently too (metadata progress can await payload dispatch
+// progress, so draining one stream to the end before starting the other may
+// stall) and close both. Errors surface from Read; closing a stream aborts
+// that stream's generation.
+func (a *Archive) GenerateV2(ctx context.Context) (meta, payload io.ReadCloser, err error) {
+	root, err := a.buildTree()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	workers := a.opts.Workers
+	if workers == 0 {
+		workers = runtime.GOMAXPROCS(0)
+	}
+
+	genCtx, cancel := context.WithCancel(ctx)
+	ledger := newRefLedger(genCtx.Done())
+
+	payloads := collectPayloads(root, nil)
+	var src payloadSource = syncSource{}
+	var async *asyncSource
+	if workers > 1 {
+		// The dispatcher publishes sizes as it binds them, so the metadata
+		// stream runs ahead of payload reads (bounded by the dispatch window).
+		async = newAsyncSource(genCtx, payloads, workers, a.opts.Buffer, ledger.publish)
+		src = async
+	}
+
+	metaR, metaW := io.Pipe()
+	payR, payW := io.Pipe()
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		em := &emitter{
+			w:    &countWriter{ctx: genCtx, w: metaW},
+			warn: a.warn,
+			refs: newRefReader(ledger),
+		}
+		metaW.CloseWithError(em.run(root))
+	}()
+	go func() {
+		defer wg.Done()
+		pe := &payloadEmitter{
+			w:       &countWriter{ctx: genCtx, w: payW},
+			src:     src,
+			warn:    a.warn,
+			ledger:  ledger,
+			publish: async == nil,
+		}
+		err := pe.run(payloads)
+		if err != nil {
+			// Unblock the metadata emitter: refs it still awaits will never
+			// be bound.
+			ledger.fail(fmt.Errorf("archive: payload stream: %w", err))
+		}
+		payW.CloseWithError(err)
+	}()
+	go func() {
+		wg.Wait()
+		cancel()
+		if async != nil {
+			async.wait()
+		}
+	}()
+	return metaR, payR, nil
+}
+
+// EstimatedSizeV2 scans the queued roots and returns the sizes of the two v2
+// streams implied by scan-time metadata. Estimates, like EstimatedSizeV1.
+func (a *Archive) EstimatedSizeV2() (meta, payload int64, err error) {
+	root, err := a.buildTree()
+	if err != nil {
+		return 0, 0, err
+	}
+	m, p := estimateV2(root, true)
+	return int64(m), int64(p), nil
 }
 
 func (a *Archive) warn(w Warning) {

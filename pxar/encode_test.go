@@ -169,3 +169,20 @@ func TestAppendPayloadHeader(t *testing.T) {
 		t.Errorf("SizePayload = %d, want %d", pxar.SizePayload(1024), 16+1024)
 	}
 }
+
+func TestAppendFormatVersion(t *testing.T) {
+	want := golden(le64(pxar.TypeFormatVersion), le64(24), le64(2))
+	checkRecord(t, "format version", pxar.AppendFormatVersion(nil, 2), want)
+}
+
+func TestAppendPayloadRef(t *testing.T) {
+	want := golden(le64(pxar.TypePayloadRef), le64(32), le64(4096), le64(777))
+	checkRecord(t, "payload ref", pxar.AppendPayloadRef(nil, 4096, 777), want)
+}
+
+func TestAppendPayloadMarkers(t *testing.T) {
+	checkRecord(t, "payload start marker", pxar.AppendPayloadStartMarker(nil),
+		golden(le64(pxar.PayloadStartMarker), le64(16)))
+	checkRecord(t, "payload tail marker", pxar.AppendPayloadTailMarker(nil),
+		golden(le64(pxar.PayloadTailMarker), le64(16)))
+}

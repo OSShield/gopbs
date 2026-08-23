@@ -67,8 +67,11 @@ type Config struct {
 
 	// OnUploadProgress, when set, is called by the upload pipeline as chunks
 	// are committed to an index, in stream order (Stats.Size grows
-	// monotonically), and once more with done=true after the index closed.
-	// Called from the uploading goroutine; keep it fast.
+	// monotonically per index), and once more with done=true after the index
+	// closed. Called from the uploading goroutine; keep it fast. A v2 split
+	// upload runs two indexes concurrently, so calls (for different archive
+	// names) can arrive from two goroutines at once — synchronize any shared
+	// state.
 	OnUploadProgress func(archiveName string, stats UploadStats, done bool)
 }
 

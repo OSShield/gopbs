@@ -405,3 +405,44 @@ func randomBytes(n int) []byte {
 	rand.New(rand.NewSource(1)).Read(buf)
 	return buf
 }
+
+// The three ways servers report "nothing to seed from" must all map to
+// ErrNoPrevious — pmoxs3's plain 404 (covered elsewhere), the real server's
+// "no valid previous backup" (no previous snapshot at all), and its "Unable
+// to open dynamic index ... No such file or directory" (previous snapshot
+// exists but lacks the archive — e.g. the first v2 backup on an id with v1
+// history). Other 400s must stay errors.
+func TestDownloadPreviousMissingVariants(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		status     int
+		msg        string
+		noPrevious bool
+	}{
+		{"real-no-snapshot", 400, "no valid previous backup", true},
+		{"real-missing-archive", 400,
+			`Unable to open dynamic index "/srv/tests/ct/x/2026-08-22T22:28:30Z/root.mpxar.didx" - No such file or directory (os error 2)`, true},
+		{"real-missing-fixed-archive", 400,
+			`Unable to open fixed index "/srv/tests/vm/x/2026-08-22T22:28:30Z/drive.img.fidx" - No such file or directory (os error 2)`, true},
+		{"genuine-error", 400, "parameter verification failed - 'archive-name': property is missing", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newMockPBS(t)
+			m.mu.Lock()
+			m.previousMissingStatus, m.previousMissingMsg = tc.status, tc.msg
+			m.mu.Unlock()
+
+			s := start(t, clientFor(t, m, nil))
+			defer s.Abort()
+
+			_, err := s.DownloadPrevious(context.Background(), "root.mpxar.didx")
+			if tc.noPrevious {
+				if !errors.Is(err, pbs.ErrNoPrevious) {
+					t.Fatalf("err = %v, want ErrNoPrevious", err)
+				}
+			} else if err == nil || errors.Is(err, pbs.ErrNoPrevious) {
+				t.Fatalf("err = %v, want a real error", err)
+			}
+		})
+	}
+}

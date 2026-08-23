@@ -67,6 +67,13 @@ type mockPBS struct {
 	finished    bool
 	failUpgrade int            // respond with this status instead of 101
 	failPath    map[string]int // h2 path -> status for the next call
+
+	// previousMissingStatus/Msg override the response for a /previous
+	// request on an archive with no registered previous index (default:
+	// pmoxs3-style plain 404). The real server answers 400 with a message
+	// depending on whether the snapshot or just the archive is missing.
+	previousMissingStatus int
+	previousMissingMsg    string
 }
 
 func newMockPBS(t *testing.T) *mockPBS {
@@ -385,9 +392,14 @@ func (m *mockPBS) handleH2(w http.ResponseWriter, r *http.Request) {
 				m.known[hex.EncodeToString(data[i+8:i+40])] = true
 			}
 		}
+		missingStatus, missingMsg := m.previousMissingStatus, m.previousMissingMsg
 		m.mu.Unlock()
 		if !ok {
-			httpError(w, 404, "no previous backup")
+			if missingStatus != 0 {
+				httpError(w, missingStatus, "%s", missingMsg)
+			} else {
+				httpError(w, 404, "no previous backup")
+			}
 			return
 		}
 		w.Write(data)

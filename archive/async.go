@@ -36,9 +36,10 @@ type asyncSource struct {
 	budget   *chunkBudget
 	pool     sync.Pool
 	wg       sync.WaitGroup
+	onBind   func(size int64, err error) // v2: reports each bind, in plan order
 }
 
-func newAsyncSource(ctx context.Context, payloads []*scan.Node, workers int, budgetBytes int64) *asyncSource {
+func newAsyncSource(ctx context.Context, payloads []*scan.Node, workers int, budgetBytes int64, onBind func(size int64, err error)) *asyncSource {
 	if budgetBytes <= 0 {
 		budgetBytes = 64 << 20
 	}
@@ -58,6 +59,7 @@ func newAsyncSource(ctx context.Context, payloads []*scan.Node, workers int, bud
 		window:   make(chan struct{}, window),
 		budget:   newChunkBudget(ctx, budgetChunks),
 		pool:     sync.Pool{New: func() any { return make([]byte, copyChunk) }},
+		onBind:   onBind,
 	}
 
 	s.wg.Add(1)
@@ -85,6 +87,9 @@ func (s *asyncSource) dispatch(payloads []*scan.Node) {
 		}
 
 		p := s.bind(n, seq)
+		if s.onBind != nil {
+			s.onBind(p.size, p.openErr)
+		}
 
 		select {
 		case s.delivery <- p:

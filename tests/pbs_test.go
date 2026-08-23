@@ -310,3 +310,86 @@ func TestBackupOrchestrator(t *testing.T) {
 		t.Errorf("second backup should deduplicate fully: %+v", result2.Archive)
 	}
 }
+
+// TestBackupOrchestratorV2 is the phase-10 gate: one gopbs.Backup call in
+// FormatV2 (split mpxar/ppxar, no catalog) against the pmoxs3 stack, restored
+// with the official proxmox-backup-client — addressed as "root.pxar" to prove
+// the client's split-archive name fallback finds our indexes — and compared
+// against the source; a second run must deduplicate fully on both streams.
+func TestBackupOrchestratorV2(t *testing.T) {
+	startPBSStack(t)
+	ctx := context.Background()
+
+	opts := gopbs.BackupOptions{
+		Client: pbs.Config{
+			BaseURL:      pmoxURL,
+			Auth:         pbs.PasswordAuth{Username: pmoxUser, Realm: pmoxRealm, Password: pmoxSecret},
+			Fingerprint:  pmoxFingerprint,
+			Datastore:    pmoxDatastore,
+			Workers:      4,
+			ChunkSizeAvg: 128 << 10,
+		},
+		Archive: archive.Options{Name: "root"},
+		Ref:     pbs.SnapshotRef{Type: "host", ID: fmt.Sprintf("gopbs-e2e-v2-%d", time.Now().UnixNano())},
+		Format:  gopbs.FormatV2,
+		Paths:   []string{sourceDir},
+	}
+
+	var (
+		result *gopbs.BackupResult
+		err    error
+	)
+	deadline := time.Now().Add(90 * time.Second)
+	for {
+		result, err = gopbs.Backup(ctx, opts)
+		if err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("backup did not succeed in time: %v", err)
+		}
+		time.Sleep(2 * time.Second)
+	}
+	if result.ArchiveName != "root.mpxar.didx" {
+		t.Errorf("archive name %q", result.ArchiveName)
+	}
+	if result.Archive.ChunkCount == 0 || result.Payload.ChunkCount == 0 {
+		t.Fatalf("stream stats: meta %+v payload %+v", result.Archive, result.Payload)
+	}
+	if result.Catalog.ChunkCount != 0 {
+		t.Errorf("v2 backup uploaded a catalog: %+v", result.Catalog)
+	}
+	t.Logf("backup 1: meta %+v payload %+v", result.Archive, result.Payload)
+
+	snapshot := fmt.Sprintf("%s/%s/%s", result.Ref.Type, result.Ref.ID,
+		result.Ref.Time.UTC().Format(time.RFC3339))
+	if err := compose("run", "--rm", "--remove-orphans",
+		"-e", "SNAPSHOT="+snapshot,
+		"-e", "ARCHIVE=root.pxar",
+		"-e", "TARGET=/restore/e2e-v2",
+		"pbsrestore"); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	equal, err := compareTrees(filepath.Join(restoreDir, "e2e-v2"), sourceDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !equal {
+		t.Fatal("restored tree differs from source")
+	}
+
+	// Second backup of unchanged content: everything deduplicates.
+	time.Sleep(2 * time.Second) // pmoxs3 resolves "previous" at seconds granularity
+	opts.Ref.Time = time.Time{}
+	result2, err := gopbs.Backup(ctx, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("backup 2: meta %+v payload %+v", result2.Archive, result2.Payload)
+	if result2.Payload.NewChunks != 0 || result2.Payload.ReusedChunks != result2.Payload.ChunkCount {
+		t.Errorf("second backup should deduplicate the payload stream fully: %+v", result2.Payload)
+	}
+	if result2.Archive.NewChunks != 0 || result2.Archive.ReusedChunks != result2.Archive.ChunkCount {
+		t.Errorf("second backup should deduplicate the metadata stream fully: %+v", result2.Archive)
+	}
+}

@@ -41,6 +41,60 @@ func (s *BackupSession) UploadCatalog(ctx context.Context, r io.Reader) (UploadS
 	return s.uploadIndexStream(ctx, "catalog.pcat1.didx", r)
 }
 
+// SplitIndexNames derives the dynamic index names of a v2 split archive from
+// an archive name in any customary spelling ("root", "root.pxar",
+// "root.pxar.didx", or one of the split names): "<base>.mpxar.didx" for the
+// metadata stream and "<base>.ppxar.didx" for the payload stream. An empty
+// name maps to base "backup".
+func SplitIndexNames(name string) (meta, payload string) {
+	base := strings.TrimSuffix(name, ".didx")
+	for _, suffix := range []string{".pxar", ".mpxar", ".ppxar"} {
+		if strings.HasSuffix(base, suffix) {
+			base = strings.TrimSuffix(base, suffix)
+			break
+		}
+	}
+	if base == "" {
+		base = "backup"
+	}
+	return base + ".mpxar.didx", base + ".ppxar.didx"
+}
+
+// UploadPXARv2 streams a split v2 archive — metadata stream and payload
+// stream — into its two dynamic indexes ("<base>.mpxar.didx" and
+// "<base>.ppxar.didx"; see SplitIndexNames). The two streams are uploaded
+// concurrently: generators couple the streams (metadata emission can await
+// payload dispatch), so consuming them sequentially could deadlock.
+// Deduplication is shared with all other uploads of the session.
+func (s *BackupSession) UploadPXARv2(ctx context.Context, name string, meta, payload io.Reader) (metaStats, payloadStats UploadStats, err error) {
+	metaName, payloadName := SplitIndexNames(name)
+
+	uctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	var (
+		wg         sync.WaitGroup
+		payloadErr error
+	)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		payloadStats, payloadErr = s.uploadIndexStream(uctx, payloadName, payload)
+		if payloadErr != nil {
+			cancel()
+		}
+	}()
+	metaStats, err = s.uploadIndexStream(uctx, metaName, meta)
+	if err != nil {
+		cancel()
+	}
+	wg.Wait()
+	if err == nil {
+		err = payloadErr
+	}
+	return metaStats, payloadStats, err
+}
+
 type chunkJob struct {
 	seq    int
 	offset uint64

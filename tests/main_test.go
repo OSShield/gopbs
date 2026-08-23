@@ -11,6 +11,7 @@
 package main_test
 
 import (
+	"bytes"
 	"crypto/rand"
 	"crypto/sha256"
 	"flag"
@@ -50,7 +51,7 @@ func TestMain(m *testing.M) {
 	if err := compose("build"); err != nil {
 		log.Fatal(err)
 	}
-	for _, svc := range []string{"pbs", "tizbac", "gopbs"} {
+	for _, svc := range []string{"pbs", "tizbac", "gopbs", "pbssplit", "gopbssplit"} {
 		if err := compose("run", "--rm", "--remove-orphans", svc); err != nil {
 			log.Fatalf("creating %s archive: %v", svc, err)
 		}
@@ -70,6 +71,7 @@ func TestComparison(t *testing.T) {
 		{filepath.Join(restoreDir, "tizbac"), filepath.Join(restoreDir, "pbs")},
 		{filepath.Join(restoreDir, "gopbs"), filepath.Join(restoreDir, "pbs")},
 		{filepath.Join(restoreDir, "gopbs"), sourceDir},
+		{filepath.Join(restoreDir, "gopbs-split"), sourceDir},
 	} {
 		equal, err := compareTrees(cmp.a, cmp.b)
 		if err != nil {
@@ -77,6 +79,25 @@ func TestComparison(t *testing.T) {
 		}
 		if !equal {
 			t.Errorf("%s and %s differ", cmp.a, cmp.b)
+		}
+	}
+}
+
+// TestSplitComparison requires gopbs's v2 split archive to be byte-identical
+// to the official pxar CLI's, stream for stream. (The restore-based check for
+// the split archive lives in TestComparison.)
+func TestSplitComparison(t *testing.T) {
+	for _, name := range []string{"mpxar", "ppxar"} {
+		ours, err := os.ReadFile(filepath.Join(pxarDir, "gopbs."+name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		official, err := os.ReadFile(filepath.Join(pxarDir, "pbs."+name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(ours, official) {
+			t.Errorf("%s differs from the official encoder's (%d vs %d bytes)", name, len(ours), len(official))
 		}
 	}
 }

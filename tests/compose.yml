@@ -37,6 +37,39 @@ services:
       - ./.test-source:/source:ro
       - ./.test-pxar:/pxar:rw
 
+  # v2 split archives of the same source: official pxar and gopbs. The
+  # outputs are byte-compared by TestSplitComparison, so any framing
+  # divergence from upstream fails loudly.
+  pbssplit:
+    user: 1000:1000
+    image: ghcr.io/scheiblingco/gopbs-tests-pbs:latest
+    build:
+      context: .
+      dockerfile: pbs.Dockerfile
+    command:
+      - "create"
+      - "/pxar/pbs.mpxar"
+      - "/source"
+      - "--payload-output"
+      - "/pxar/pbs.ppxar"
+    volumes:
+      - ./.test-source:/source:ro
+      - ./.test-pxar:/pxar:rw
+
+  gopbssplit:
+    user: 1000:1000
+    build:
+      context: ..
+      dockerfile: tests/gopbs.Dockerfile
+    command:
+      - -payload
+      - /pxar/gopbs.ppxar
+      - /pxar/gopbs.mpxar
+      - /source
+    volumes:
+      - ./.test-source:/source:ro
+      - ./.test-pxar:/pxar:rw
+
   restore:
     user: 0:0
     image: ghcr.io/scheiblingco/gopbs-tests-pbs:latest
@@ -45,10 +78,11 @@ services:
       - "bash"
       - "-ec"
       - |
-        rm -rf /restore/pbs /restore/tizbac /restore/gopbs
+        rm -rf /restore/pbs /restore/tizbac /restore/gopbs /restore/gopbs-split
         pxar extract /pxar/pbs.pxar /restore/pbs
         pxar extract /pxar/tizbac.pxar /restore/tizbac
         pxar extract /pxar/gopbs.pxar /restore/gopbs
+        pxar extract --payload-input /pxar/gopbs.ppxar /pxar/gopbs.mpxar /restore/gopbs-split
         chmod -R 777 /restore/*
     volumes:
       - ./.test-pxar:/pxar:ro

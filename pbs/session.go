@@ -196,14 +196,22 @@ func (s *BackupSession) roundTrip(ctx context.Context, method, path string, quer
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		// "No previous backup" is not an error condition. The real server
-		// reports it as 400 "no valid previous backup"; pmoxs3backuproxy
-		// uses a plain 404.
+		// reports a missing previous snapshot as 400 "no valid previous
+		// backup", and a previous snapshot that lacks the requested archive
+		// (e.g. the first v2 backup on an id with v1 history) as 400
+		// `Unable to open dynamic index ... - No such file or directory`;
+		// pmoxs3backuproxy uses a plain 404 for both.
 		// TODO: Open PR?
-		if path == "/previous" &&
-			(resp.StatusCode == http.StatusNotFound ||
-				(resp.StatusCode == http.StatusBadRequest &&
-					strings.Contains(string(respBody), "no valid previous backup"))) {
+		if path == "/previous" && resp.StatusCode == http.StatusNotFound {
 			return nil, ErrNoPrevious
+		}
+		if path == "/previous" && resp.StatusCode == http.StatusBadRequest {
+			msg := string(respBody)
+			if strings.Contains(msg, "no valid previous backup") ||
+				(strings.Contains(msg, "Unable to open") &&
+					strings.Contains(msg, "No such file or directory")) {
+				return nil, ErrNoPrevious
+			}
 		}
 		return nil, fmt.Errorf("pbs: %s %s: %s: %s",
 			method, path, resp.Status, strings.TrimSpace(string(respBody)))

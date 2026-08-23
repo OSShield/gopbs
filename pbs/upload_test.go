@@ -248,3 +248,93 @@ func TestUploadProgress(t *testing.T) {
 		t.Fatalf("final size %d, want %d", prev, len(data))
 	}
 }
+
+func TestSplitIndexNames(t *testing.T) {
+	for _, tc := range []struct{ in, meta, payload string }{
+		{"", "backup.mpxar.didx", "backup.ppxar.didx"},
+		{"root", "root.mpxar.didx", "root.ppxar.didx"},
+		{"root.pxar", "root.mpxar.didx", "root.ppxar.didx"},
+		{"root.pxar.didx", "root.mpxar.didx", "root.ppxar.didx"},
+		{"root.mpxar", "root.mpxar.didx", "root.ppxar.didx"},
+		{"root.ppxar.didx", "root.mpxar.didx", "root.ppxar.didx"},
+		{"my.archive", "my.archive.mpxar.didx", "my.archive.ppxar.didx"},
+	} {
+		meta, payload := pbs.SplitIndexNames(tc.in)
+		if meta != tc.meta || payload != tc.payload {
+			t.Errorf("SplitIndexNames(%q) = (%q, %q), want (%q, %q)", tc.in, meta, payload, tc.meta, tc.payload)
+		}
+	}
+}
+
+// A split upload drives two dynamic indexes concurrently over one session;
+// chunks shared between the streams deduplicate across them.
+func TestUploadPXARv2(t *testing.T) {
+	m := newMockPBS(t)
+	m.mu.Lock()
+	m.chunkDelay = func(digest string) time.Duration {
+		return time.Duration(digest[0]%16) * time.Millisecond
+	}
+	m.mu.Unlock()
+
+	// The payload stream repeats a region of the metadata stream, so some
+	// chunks appear in both indexes and must upload once.
+	payloadData := pipelineData(t)
+	metaData := append([]byte("v2 metadata stream "), payloadData[:1<<20]...)
+	const avg = 64 << 10
+	expMeta, wantMetaCsum := expectedChunks(t, metaData, avg)
+	expPayload, wantPayloadCsum := expectedChunks(t, payloadData, avg)
+
+	c := clientFor(t, m, func(cfg *pbs.Config) { cfg.Workers = 8; cfg.ChunkSizeAvg = avg })
+	s := start(t, c)
+	defer s.Abort()
+
+	metaStats, payloadStats, err := s.UploadPXARv2(context.Background(), "root.pxar",
+		bytes.NewReader(metaData), bytes.NewReader(payloadData))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metaStats.Size != uint64(len(metaData)) || metaStats.ChunkCount != uint64(len(expMeta)) {
+		t.Errorf("meta stats %+v, want size %d count %d", metaStats, len(metaData), len(expMeta))
+	}
+	if payloadStats.Size != uint64(len(payloadData)) || payloadStats.ChunkCount != uint64(len(expPayload)) {
+		t.Errorf("payload stats %+v, want size %d count %d", payloadStats, len(payloadData), len(expPayload))
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	byName := make(map[string]*mockIndex)
+	for _, i := range m.indexes {
+		byName[i.name] = i
+	}
+	for name, want := range map[string]struct {
+		csum [32]byte
+		exp  []expectedChunk
+	}{
+		"root.mpxar.didx": {wantMetaCsum, expMeta},
+		"root.ppxar.didx": {wantPayloadCsum, expPayload},
+	} {
+		idx := byName[name]
+		if idx == nil || !idx.closed {
+			t.Fatalf("index %s missing or not closed", name)
+		}
+		if idx.csum != hex.EncodeToString(want.csum[:]) {
+			t.Errorf("%s csum %s, want %s", name, idx.csum, hex.EncodeToString(want.csum[:]))
+		}
+		for i, e := range want.exp {
+			if idx.digests[i] != e.digest || idx.offsets[i] != e.offset {
+				t.Fatalf("%s append order broken at %d", name, i)
+			}
+		}
+	}
+	// Chunks shared between the streams are stored exactly once.
+	uniq := make(map[string]bool)
+	for _, e := range append(append([]expectedChunk(nil), expMeta...), expPayload...) {
+		uniq[e.digest] = true
+	}
+	if len(m.chunks) != len(uniq) {
+		t.Errorf("server stores %d chunks, want %d unique across both streams", len(m.chunks), len(uniq))
+	}
+	if metaStats.ReusedChunks+payloadStats.ReusedChunks == 0 {
+		t.Error("overlapping streams produced no cross-index dedup")
+	}
+}
