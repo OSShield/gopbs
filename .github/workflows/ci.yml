@@ -32,6 +32,22 @@ jobs:
             cover: true
 
 
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Fuzz (20s per target)
+        run: |
+          go test ./pxar    -run '^$' -fuzz '^FuzzValidateFilename$' -fuzztime 20s
+          go test ./pxar    -run '^$' -fuzz '^FuzzPermuteBST$'       -fuzztime 20s
+          go test ./catalog -run '^$' -fuzz '^FuzzDecode$'           -fuzztime 20s
+          go test ./catalog -run '^$' -fuzz '^FuzzVarint$'           -fuzztime 20s
+          go test ./chunker -run '^$' -fuzz '^FuzzSplit$'            -fuzztime 20s
+          go test ./scan    -run '^$' -fuzz '^FuzzParseACLXattr$'    -fuzztime 20s
+
   integration-tests:
     runs-on: ubuntu-latest
     permissions: read-all

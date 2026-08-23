@@ -220,9 +220,10 @@ func (s *BackupSession) roundTrip(ctx context.Context, method, path string, quer
 }
 
 // CreateDynamicIndex opens a dynamic-index writer for the named archive
-// (e.g. "root.pxar.didx") and returns its writer id.
-// Currently, parameters are sent via query string (pmoxs3backupproxy) and JSON body (proxmox-backup-server)
-// PBS ignores the query parameter, so all is good for now, but this might cause issues in the future.
+// (e.g. "root.pxar.didx") and returns its writer id. Parameters are sent
+// both as a query string and as a JSON body: the real server requires the
+// body, pmoxs3backuproxy reads only the query, and each ignores the other's
+// encoding.
 func (s *BackupSession) CreateDynamicIndex(ctx context.Context, name string) (uint64, error) {
 	body, err := json.Marshal(map[string]string{"archive-name": name})
 	if err != nil {
@@ -250,7 +251,7 @@ func (s *BackupSession) CreateDynamicIndex(ctx context.Context, name string) (ui
 // AppendDynamicIndex registers uploaded chunks with an index: digests are
 // lowercase hex, offsets the chunk START positions within the archive
 // stream. At most 128 chunks per call (the server rejects oversized
-// requests); the phase-8 pipeline batches accordingly.
+// requests); the Upload* helpers batch accordingly.
 func (s *BackupSession) AppendDynamicIndex(ctx context.Context, wid uint64, digests []string, offsets []uint64) error {
 	if len(digests) != len(offsets) {
 		return fmt.Errorf("pbs: %d digests for %d offsets", len(digests), len(offsets))
@@ -315,9 +316,11 @@ func (s *BackupSession) UploadDynamicChunk(ctx context.Context, enc *BlobEncoder
 	return err
 }
 
-// UploadBlob uploads a named blob file (e.g. "index.json.blob") and records
-// it in the manifest: size is the raw payload length, csum the sha256 of the
-// encoded blob as stored by the server.
+// UploadBlob frames data as a blob (optionally zstd-compressed), uploads it
+// under filename (e.g. "pct.conf.blob"), and records it in the manifest with
+// the size and sha256 of the encoded blob as stored by the server (matching
+// the reference client — the restore path verifies both against the stored
+// file).
 func (s *BackupSession) UploadBlob(ctx context.Context, enc *BlobEncoder, filename string, data []byte, compress bool) error {
 	framed := enc.Encode(data, compress)
 	query := url.Values{
@@ -332,7 +335,7 @@ func (s *BackupSession) UploadBlob(ctx context.Context, enc *BlobEncoder, filena
 	s.mu.Lock()
 	s.files = append(s.files, manifestFile{
 		Filename:  filename,
-		Size:      uint64(len(data)),
+		Size:      uint64(len(framed)),
 		Csum:      hex.EncodeToString(sum[:]),
 		CryptMode: "none",
 	})

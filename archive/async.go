@@ -247,7 +247,9 @@ func (s *asyncSource) take(seq int) ([]byte, bool) {
 }
 
 func (s *asyncSource) putBack(buf []byte) {
-	s.pool.Put(buf) //nolint:staticcheck // fixed-size slices
+	//lint:ignore SA6002 the boxing allocation is one word per 1 MiB buffer;
+	// plain []byte keeps the chunk plumbing across goroutines simple.
+	s.pool.Put(buf)
 	s.budget.release()
 }
 

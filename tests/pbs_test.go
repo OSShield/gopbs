@@ -254,6 +254,12 @@ func TestBackupOrchestrator(t *testing.T) {
 		Archive: archive.Options{Name: "root"},
 		Ref:     pbs.SnapshotRef{Type: "host", ID: fmt.Sprintf("gopbs-e2e-%d", time.Now().UnixNano())},
 		Paths:   []string{sourceDir},
+		// Metadata blobs ride alongside the archive in the snapshot without
+		// being part of it; ".blob" is appended to the first name.
+		Blobs: []gopbs.Blob{
+			{Name: "app-meta.json", Data: []byte(`{"app":"gopbs-harness","kept-for":"90d"}`)},
+			{Name: "notes.txt.blob", Data: bytes.Repeat([]byte("compressible notes "), 200)},
+		},
 	}
 
 	// First backup (retried while the stack comes up).
@@ -296,6 +302,29 @@ func TestBackupOrchestrator(t *testing.T) {
 	}
 	if !equal {
 		t.Fatal("restored tree differs from source")
+	}
+
+	// The metadata blobs restore by name with their exact content.
+	for _, blob := range []struct{ name, target string }{
+		{"app-meta.json.blob", "e2e-meta.json"},
+		{"notes.txt.blob", "e2e-notes.txt"},
+	} {
+		if err := compose("run", "--rm", "--remove-orphans",
+			"-e", "SNAPSHOT="+snapshot,
+			"-e", "ARCHIVE="+blob.name,
+			"-e", "TARGET=/restore/"+blob.target,
+			"pbsrestore"); err != nil {
+			t.Fatalf("restoring blob %s: %v", blob.name, err)
+		}
+	}
+	for i, target := range []string{"e2e-meta.json", "e2e-notes.txt"} {
+		got, err := os.ReadFile(filepath.Join(restoreDir, target))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(got, opts.Blobs[i].Data) {
+			t.Errorf("blob %s restored %d bytes, want %d", opts.Blobs[i].Name, len(got), len(opts.Blobs[i].Data))
+		}
 	}
 
 	// Second backup of unchanged content: everything deduplicates.

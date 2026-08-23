@@ -37,13 +37,21 @@ func Decode(data []byte) (*Entry, error) {
 		return nil, fmt.Errorf("catalog: root table pointer %d out of range", rootPos)
 	}
 	root := &Entry{Type: TypeDirectory}
-	if err := decodeTable(data, rootPos, root); err != nil {
+	if err := decodeTable(data, rootPos, root, 0); err != nil {
 		return nil, err
 	}
 	return root, nil
 }
 
-func decodeTable(data []byte, pos uint64, dir *Entry) error {
+// maxDepth bounds directory nesting during decoding. Legitimate nesting is
+// limited by PATH_MAX (≈2048 single-character components); the bound exists
+// so a corrupt catalog cannot recurse the decoder into a stack overflow.
+const maxDepth = 4096
+
+func decodeTable(data []byte, pos uint64, dir *Entry, depth int) error {
+	if depth > maxDepth {
+		return fmt.Errorf("catalog: directory nesting exceeds %d levels", maxDepth)
+	}
 	if pos >= uint64(len(data)) {
 		return fmt.Errorf("catalog: table position %d out of range", pos)
 	}
@@ -88,10 +96,13 @@ func decodeTable(data []byte, pos uint64, dir *Entry) error {
 				return err
 			}
 			table = table[n:]
-			if delta > pos {
-				return fmt.Errorf("catalog: %q: delta %d before file start", e.Name, delta)
+			// Tables are written bottom-up: a child table lies strictly
+			// before its parent. Delta 0 would alias the current table and
+			// recurse forever on corrupt input.
+			if delta == 0 || delta > pos {
+				return fmt.Errorf("catalog: %q: child table delta %d out of range", e.Name, delta)
 			}
-			if err := decodeTable(data, pos-delta, e); err != nil {
+			if err := decodeTable(data, pos-delta, e, depth+1); err != nil {
 				return err
 			}
 		case TypeFile:

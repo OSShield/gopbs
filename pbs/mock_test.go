@@ -53,20 +53,21 @@ type mockPBS struct {
 
 	zdec *zstd.Decoder
 
-	mu          sync.Mutex
-	loginCount  int
-	upgradeReqs []*http.Request
-	sessions    []net.Conn
-	nextWID     uint64
-	indexes     map[uint64]*mockIndex
-	chunks      map[string][]byte // digest hex -> plaintext
-	known       map[string]bool   // uploaded or registered via /previous
-	chunkDelay  func(digestHex string) time.Duration
-	blobs       map[string][]byte // file name -> decoded payload
-	previous    map[string][]byte // archive name -> raw didx
-	finished    bool
-	failUpgrade int            // respond with this status instead of 101
-	failPath    map[string]int // h2 path -> status for the next call
+	mu           sync.Mutex
+	loginCount   int
+	upgradeReqs  []*http.Request
+	sessions     []net.Conn
+	nextWID      uint64
+	indexes      map[uint64]*mockIndex
+	chunks       map[string][]byte // digest hex -> plaintext
+	known        map[string]bool   // uploaded or registered via /previous
+	chunkDelay   func(digestHex string) time.Duration
+	blobs        map[string][]byte // file name -> decoded payload
+	blobsEncoded map[string][]byte // file name -> encoded blob as stored
+	previous     map[string][]byte // archive name -> raw didx
+	finished     bool
+	failUpgrade  int            // respond with this status instead of 101
+	failPath     map[string]int // h2 path -> status for the next call
 
 	// previousMissingStatus/Msg override the response for a /previous
 	// request on an archive with no registered previous index (default:
@@ -108,18 +109,19 @@ func newMockPBS(t *testing.T) *mockPBS {
 	}
 
 	m := &mockPBS{
-		t:           t,
-		ln:          ln,
-		fingerprint: hex.EncodeToString(sum[:]),
-		baseURL:     "https://" + ln.Addr().String(),
-		zdec:        dec,
-		nextWID:     1,
-		indexes:     make(map[uint64]*mockIndex),
-		chunks:      make(map[string][]byte),
-		known:       make(map[string]bool),
-		blobs:       make(map[string][]byte),
-		previous:    make(map[string][]byte),
-		failPath:    make(map[string]int),
+		t:            t,
+		ln:           ln,
+		fingerprint:  hex.EncodeToString(sum[:]),
+		baseURL:      "https://" + ln.Addr().String(),
+		zdec:         dec,
+		nextWID:      1,
+		indexes:      make(map[uint64]*mockIndex),
+		chunks:       make(map[string][]byte),
+		known:        make(map[string]bool),
+		blobs:        make(map[string][]byte),
+		blobsEncoded: make(map[string][]byte),
+		previous:     make(map[string][]byte),
+		failPath:     make(map[string]int),
 	}
 	go m.serve()
 	t.Cleanup(func() { ln.Close(); dec.Close() })
@@ -380,6 +382,7 @@ func (m *mockPBS) handleH2(w http.ResponseWriter, r *http.Request) {
 		}
 		m.mu.Lock()
 		m.blobs[q.Get("file-name")] = payload
+		m.blobsEncoded[q.Get("file-name")] = append([]byte(nil), body...)
 		m.mu.Unlock()
 
 	case "GET /previous":

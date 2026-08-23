@@ -40,6 +40,7 @@ type Config struct {
 	// The scheme must be https; the port defaults to 8007.
 	BaseURL string
 
+	// Auth selects the authentication method: TokenAuth or PasswordAuth.
 	Auth Auth
 
 	// Fingerprint pins the server certificate: the SHA-256 of its DER
@@ -53,12 +54,13 @@ type Config struct {
 	// server.
 	InsecureSkipAll bool
 
+	// Datastore is the target datastore's name on the server.
 	Datastore string
 
-	Namespace string // optional
+	// Namespace within the datastore; empty for the root namespace.
+	Namespace string
 
-	// Workers is the number of in-flight chunk uploads (phase-8 pipeline);
-	// 0 = 4.
+	// Workers is the number of concurrent chunk uploads; 0 = 4.
 	Workers int
 
 	// ChunkSizeAvg is the content-defined chunking target; 0 = 4 MiB.

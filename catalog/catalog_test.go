@@ -230,4 +230,22 @@ func TestDecodeErrors(t *testing.T) {
 	if _, err := catalog.Decode(bad); err == nil {
 		t.Error("out-of-range root pointer must fail")
 	}
+
+	// A directory entry whose child-table delta is 0 aliases its own table;
+	// the decoder must reject the cycle instead of recursing forever
+	// (found by FuzzDecode; the crasher is in testdata/fuzz/FuzzDecode).
+	table := []byte{
+		'd', // entry type: directory
+		1,   // name length
+		'x', // name
+		0,   // child table delta 0 -> points at this very table
+	}
+	body := append([]byte{byte(len(table) + 1), 1}, table...) // table len, count 1
+	cyclic := append([]byte{}, catalog.Magic...)
+	pos := uint64(len(cyclic))
+	cyclic = append(cyclic, body...)
+	cyclic = append(cyclic, binary.LittleEndian.AppendUint64(nil, pos)...)
+	if _, err := catalog.Decode(cyclic); err == nil {
+		t.Error("self-referencing directory table must fail")
+	}
 }

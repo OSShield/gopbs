@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/scheiblingco/gopbs/archive"
 	"github.com/scheiblingco/gopbs/pbs"
@@ -59,6 +60,13 @@ type BackupOptions struct {
 	// root alongside Paths. Readers are consumed during the backup, so a
 	// BackupOptions value with streams is good for one call.
 	Streams []Stream
+	// Blobs are uploaded as separate blob files in the snapshot, alongside
+	// the archive indexes and listed in the manifest — they are not part of
+	// the archive. Use them for backup metadata PBS has no native place for
+	// (application state, retention hints, tool versions, …). Contents are
+	// downloaded back with `proxmox-backup-client restore <snapshot>
+	// <name>.blob <target>`.
+	Blobs []Blob
 	// SkipCatalog omits the .pcat1 upload (the snapshot will not be
 	// browsable in the PBS UI). FormatV1 only; v2 has no catalog.
 	SkipCatalog bool
@@ -78,6 +86,16 @@ type Stream struct {
 	Name   string
 	Size   int64
 	Reader io.Reader
+}
+
+// Blob is a metadata file for BackupOptions.Blobs: stored in the snapshot as
+// "<Name>.blob" (the suffix is appended when missing), zstd-compressed when
+// that is smaller. Data is held in memory — blobs are for small metadata;
+// bulk content belongs in the archive or a Stream. The name "index.json" is
+// reserved for the manifest.
+type Blob struct {
+	Name string
+	Data []byte
 }
 
 // Progress is one live progress report during Backup.
@@ -125,6 +143,10 @@ func Backup(ctx context.Context, opts BackupOptions) (*BackupResult, error) {
 	}
 	if len(opts.Paths) == 0 && len(opts.Streams) == 0 {
 		return nil, fmt.Errorf("gopbs: nothing to back up")
+	}
+	blobNames, err := blobFileNames(opts.Blobs)
+	if err != nil {
+		return nil, err
 	}
 
 	result := &BackupResult{}
@@ -236,8 +258,48 @@ func Backup(ctx context.Context, opts BackupOptions) (*BackupResult, error) {
 		}
 	}
 
+	if len(opts.Blobs) > 0 {
+		enc := pbs.NewBlobEncoder()
+		for i, b := range opts.Blobs {
+			if err := sess.UploadBlob(ctx, enc, blobNames[i], b.Data, true); err != nil {
+				return nil, err
+			}
+		}
+	}
+
 	if err := sess.Finish(ctx); err != nil {
 		return nil, err
 	}
 	return result, nil
+}
+
+// blobFileNames validates BackupOptions.Blobs and returns the snapshot file
+// names ("<name>.blob") in input order.
+func blobFileNames(blobs []Blob) ([]string, error) {
+	if len(blobs) == 0 {
+		return nil, nil
+	}
+	names := make([]string, len(blobs))
+	seen := make(map[string]bool, len(blobs))
+	for i, b := range blobs {
+		name := b.Name
+		switch {
+		case name == "":
+			return nil, fmt.Errorf("gopbs: blob %d has an empty name", i)
+		case strings.ContainsAny(name, "/\x00"):
+			return nil, fmt.Errorf("gopbs: invalid blob name %q", name)
+		}
+		if !strings.HasSuffix(name, ".blob") {
+			name += ".blob"
+		}
+		if name == "index.json.blob" {
+			return nil, fmt.Errorf("gopbs: blob name %q is reserved for the manifest", name)
+		}
+		if seen[name] {
+			return nil, fmt.Errorf("gopbs: duplicate blob name %q", name)
+		}
+		seen[name] = true
+		names[i] = name
+	}
+	return names, nil
 }

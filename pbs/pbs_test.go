@@ -261,8 +261,19 @@ func TestBackupSessionFlow(t *testing.T) {
 	if pxarEntry.Size != offset || pxarEntry.Csum != hex.EncodeToString(csumArr[:]) || pxarEntry.CryptMode != "none" {
 		t.Errorf("manifest pxar entry: %+v", pxarEntry)
 	}
-	if _, ok := byName["extra.blob"]; !ok {
-		t.Error("manifest misses blob entry")
+	blobIdx, ok := byName["extra.blob"]
+	if !ok {
+		t.Fatal("manifest misses blob entry")
+	}
+	// Blob manifest entries carry the ENCODED blob's size and csum (as the
+	// reference client records them); the official restore path verifies
+	// both against the stored file and rejects raw-size entries.
+	encoded := m.blobsEncoded["extra.blob"]
+	encSum := sha256.Sum256(encoded)
+	blobEntry := manifest.Files[blobIdx]
+	if blobEntry.Size != uint64(len(encoded)) || blobEntry.Csum != hex.EncodeToString(encSum[:]) {
+		t.Errorf("manifest blob entry %+v, want encoded size %d and csum %x",
+			blobEntry, len(encoded), encSum)
 	}
 
 	// A finished session refuses further use.

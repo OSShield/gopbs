@@ -88,6 +88,31 @@ services:
       - ./.test-pxar:/pxar:ro
       - ./.test-restore:/restore:rw
 
+  # One-off backup of /source/$$SUBDIR to the pmoxs3 stack with the official
+  # proxmox-backup-client (used by the performance comparison). MODE selects
+  # the archive format: legacy = v1 pxar, metadata = v2 split mpxar/ppxar.
+  pbsbackup:
+    user: 1000:1000
+    image: ghcr.io/scheiblingco/gopbs-tests-pbs:latest
+    build:
+      context: .
+      dockerfile: pbs.Dockerfile
+    entrypoint: ""
+    environment:
+      HOME: /tmp
+      PBS_PASSWORD: garagegaragegarage
+      PBS_FINGERPRINT: "55:BC:29:4B:BA:B6:A1:03:42:A9:D8:51:14:9D:BD:00:D2:2A:9C:A1:B8:4A:85:E1:AF:B2:0C:48:40:D6:CC:A4"
+    command:
+      - bash
+      - -ec
+      - |
+        cd "/source/$$SUBDIR"
+        proxmox-backup-client backup "root.pxar:." \
+          --repository garagegarage@pbs@pmoxs3:pbs \
+          --backup-id "$$BACKUPID" --change-detection-mode "$$MODE"
+    volumes:
+      - ./.test-source:/source:ro
+
   # One-off restore of a snapshot from the pmoxs3 stack with the official
   # proxmox-backup-client; SNAPSHOT/ARCHIVE/TARGET come from `compose run -e`.
   # Runs as root: restoring ownership (e.g. the uid/gid-0 virtual root and
