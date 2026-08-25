@@ -9,7 +9,7 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/scheiblingco/gopbs/catalog"
+	"github.com/osshield/gopbs/catalog"
 )
 
 // TestCatalogComparison validates the gopbs .pcat1 catalog two ways: it must

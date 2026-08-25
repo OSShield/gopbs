@@ -6,7 +6,7 @@ import (
 	"log"
 	"os"
 
-	"github.com/scheiblingco/gopbs/archive"
+	"github.com/osshield/gopbs/archive"
 )
 
 // Archive-only use: generate a pxar v1 stream from a directory tree and

@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/scheiblingco/gopbs/chunker"
-	"github.com/scheiblingco/gopbs/pbs"
+	"github.com/osshield/gopbs/chunker"
+	"github.com/osshield/gopbs/pbs"
 )
 
 // pipelineData builds a stream with a large repeated region so content-

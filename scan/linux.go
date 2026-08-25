@@ -11,7 +11,7 @@ import (
 	"strings"
 	"unsafe"
 
-	"github.com/scheiblingco/gopbs/pxar"
+	"github.com/osshield/gopbs/pxar"
 	"golang.org/x/sys/unix"
 )
 

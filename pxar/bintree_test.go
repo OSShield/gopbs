@@ -4,7 +4,7 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/scheiblingco/gopbs/pxar"
+	"github.com/osshield/gopbs/pxar"
 )
 
 // Upstream permutation vectors from proxmox/pxar src/binary_tree_array.rs

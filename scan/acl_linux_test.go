@@ -6,8 +6,8 @@ import (
 	"encoding/binary"
 	"testing"
 
-	"github.com/scheiblingco/gopbs/pxar"
-	"github.com/scheiblingco/gopbs/scan"
+	"github.com/osshield/gopbs/pxar"
+	"github.com/osshield/gopbs/scan"
 )
 
 func aclXattr(entries ...[3]uint32) []byte {

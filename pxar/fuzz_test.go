@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/scheiblingco/gopbs/pxar"
+	"github.com/osshield/gopbs/pxar"
 )
 
 // FuzzValidateFilename checks that filename validation never panics and that

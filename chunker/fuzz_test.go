@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/scheiblingco/gopbs/chunker"
+	"github.com/osshield/gopbs/chunker"
 )
 
 // FuzzSplit checks the chunker's structural invariants on arbitrary input:

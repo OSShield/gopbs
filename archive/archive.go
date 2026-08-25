@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/scheiblingco/gopbs/scan"
+	"github.com/osshield/gopbs/scan"
 )
 
 // WarnKind classifies non-fatal generation events.

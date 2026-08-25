@@ -4,7 +4,7 @@ This document describes the GoPBS librarys public API and how to use it.
 
 We mainly explore the inner workings of the library, the examples are a better starting point for just regular usage of the library.
 
-For more details, you can have a look at the godoc documentation: https://pkg.go.dev/github.com/scheiblingco/gopbs
+For more details, you can have a look at the godoc documentation: https://pkg.go.dev/github.com/osshield/gopbs
 
 ## Package map
 

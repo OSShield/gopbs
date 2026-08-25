@@ -10,8 +10,8 @@ import (
 	"encoding/binary"
 	"fmt"
 
-	"github.com/scheiblingco/gopbs/pxar"
-	"github.com/scheiblingco/gopbs/scan"
+	"github.com/osshield/gopbs/pxar"
+	"github.com/osshield/gopbs/scan"
 )
 
 type decNode struct {

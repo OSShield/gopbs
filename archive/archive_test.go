@@ -11,9 +11,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/scheiblingco/gopbs/archive"
-	"github.com/scheiblingco/gopbs/catalog"
-	"github.com/scheiblingco/gopbs/scan"
+	"github.com/osshield/gopbs/archive"
+	"github.com/osshield/gopbs/catalog"
+	"github.com/osshield/gopbs/scan"
 	"golang.org/x/sys/unix"
 )
 

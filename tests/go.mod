@@ -1,8 +1,8 @@
-module github.com/scheiblingco/gopbs/tests
+module github.com/osshield/gopbs/tests
 
 go 1.27.0
 
-require github.com/scheiblingco/gopbs v0.0.0
+require github.com/osshield/gopbs v0.0.0
 
 require (
 	github.com/dchest/siphash v1.2.3 // indirect
@@ -12,4 +12,4 @@ require (
 	golang.org/x/text v0.41.0 // indirect
 )
 
-replace github.com/scheiblingco/gopbs => ../
+replace github.com/osshield/gopbs => ../

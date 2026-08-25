@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/scheiblingco/gopbs/pxar"
+	"github.com/osshield/gopbs/pxar"
 )
 
 // Worked example with hand-picked hashes: three children A(10), B(20), C(30).

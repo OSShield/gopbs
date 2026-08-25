@@ -8,7 +8,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/scheiblingco/gopbs/chunker"
+	"github.com/osshield/gopbs/chunker"
 )
 
 // xorshift64: the same filler the vector generator uses

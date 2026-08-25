@@ -13,7 +13,7 @@ import (
 	"os"
 	"sync"
 
-	"github.com/scheiblingco/gopbs/archive"
+	"github.com/osshield/gopbs/archive"
 )
 
 func main() {

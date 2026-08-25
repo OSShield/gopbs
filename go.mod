@@ -1,4 +1,4 @@
-module github.com/scheiblingco/gopbs
+module github.com/osshield/gopbs
 
 go 1.27.0
 

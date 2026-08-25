@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"sort"
 
-	"github.com/scheiblingco/gopbs/pxar"
+	"github.com/osshield/gopbs/pxar"
 )
 
 // File-type bits of Stat.Mode (the universal S_IF* values; kept local so the

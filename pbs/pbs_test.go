@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/klauspost/compress/zstd"
-	"github.com/scheiblingco/gopbs/pbs"
+	"github.com/osshield/gopbs/pbs"
 )
 
 func clientFor(t *testing.T, m *mockPBS, mutate func(*pbs.Config)) *pbs.Client {

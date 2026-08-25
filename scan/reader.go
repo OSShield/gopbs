@@ -1,6 +1,6 @@
 package scan
 
-import "github.com/scheiblingco/gopbs/pxar"
+import "github.com/osshield/gopbs/pxar"
 
 // Stat is the lstat subset the scanner needs, in encoder-ready form.
 type Stat struct {

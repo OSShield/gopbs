@@ -5,7 +5,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/scheiblingco/gopbs/scan"
+	"github.com/osshield/gopbs/scan"
 )
 
 // Test-only exports: compiled only for tests, keeping internals reachable

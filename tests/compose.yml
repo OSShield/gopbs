@@ -1,7 +1,7 @@
 services:
   tizbac:
     user: 1000:1000
-    image: ghcr.io/scheiblingco/gopbs-tests-tizbac:latest
+    image: ghcr.io/osshield/gopbs-tests-tizbac:latest
     build:
       context: .
       dockerfile: tizbac.Dockerfile
@@ -11,7 +11,7 @@ services:
 
   pbs:
     user: 1000:1000
-    image: ghcr.io/scheiblingco/gopbs-tests-pbs:latest
+    image: ghcr.io/osshield/gopbs-tests-pbs:latest
     build:
       context: .
       dockerfile: pbs.Dockerfile
@@ -42,7 +42,7 @@ services:
   # divergence from upstream fails loudly.
   pbssplit:
     user: 1000:1000
-    image: ghcr.io/scheiblingco/gopbs-tests-pbs:latest
+    image: ghcr.io/osshield/gopbs-tests-pbs:latest
     build:
       context: .
       dockerfile: pbs.Dockerfile
@@ -72,7 +72,7 @@ services:
 
   restore:
     user: 0:0
-    image: ghcr.io/scheiblingco/gopbs-tests-pbs:latest
+    image: ghcr.io/osshield/gopbs-tests-pbs:latest
     entrypoint: ""
     command:
       - "bash"
@@ -93,7 +93,7 @@ services:
   # the archive format: legacy = v1 pxar, metadata = v2 split mpxar/ppxar.
   pbsbackup:
     user: 1000:1000
-    image: ghcr.io/scheiblingco/gopbs-tests-pbs:latest
+    image: ghcr.io/osshield/gopbs-tests-pbs:latest
     build:
       context: .
       dockerfile: pbs.Dockerfile

@@ -40,13 +40,13 @@ We include performance tests (`cd tests && GOPBS_PERF=1 GOPBS_PERF_MB=512 go tes
 ## Installation
 
 ```bash
-go get github.com/scheiblingco/gopbs
+go get github.com/osshield/gopbs
 ```
 
 A small CLI for generating archives to files (used by the integration harness) ships as well:
 
 ```bash
-go install github.com/scheiblingco/gopbs/cmd/gopbs-pxar@latest
+go install github.com/osshield/gopbs/cmd/gopbs-pxar@latest
 gopbs-pxar -catalog out.pcat1 out.pxar /some/dir                 # v1 + catalog
 gopbs-pxar -payload out.ppxar out.mpxar /some/dir                # v2 split archive
 ```
@@ -193,10 +193,10 @@ import (
 	"os"
 	"time"
 
-	"github.com/scheiblingco/gopbs"
-	"github.com/scheiblingco/gopbs/archive"
-	"github.com/scheiblingco/gopbs/pbs"
-	"github.com/scheiblingco/gopbs/scan"
+	"github.com/osshield/gopbs"
+	"github.com/osshield/gopbs/archive"
+	"github.com/osshield/gopbs/pbs"
+	"github.com/osshield/gopbs/scan"
 )
 
 func main() {

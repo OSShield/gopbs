@@ -6,7 +6,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/scheiblingco/gopbs/scan"
+	"github.com/osshield/gopbs/scan"
 )
 
 // payloadSource is the seam between the emitter and payload I/O. The

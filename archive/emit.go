@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/scheiblingco/gopbs/pxar"
-	"github.com/scheiblingco/gopbs/scan"
+	"github.com/osshield/gopbs/pxar"
+	"github.com/osshield/gopbs/scan"
 )
 
 // countWriter tracks the absolute stream position — the only offset state the

@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/scheiblingco/gopbs"
+	"github.com/osshield/gopbs"
 )
 
 // Backup's option validation runs before any connection is made, so the

@@ -13,9 +13,9 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/scheiblingco/gopbs/archive"
-	"github.com/scheiblingco/gopbs/pxar"
-	"github.com/scheiblingco/gopbs/scan"
+	"github.com/osshield/gopbs/archive"
+	"github.com/osshield/gopbs/pxar"
+	"github.com/osshield/gopbs/scan"
 	"go.uber.org/goleak"
 	"golang.org/x/sys/unix"
 )

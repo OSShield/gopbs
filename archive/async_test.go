@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/scheiblingco/gopbs/archive"
-	"github.com/scheiblingco/gopbs/scan"
+	"github.com/osshield/gopbs/archive"
+	"github.com/osshield/gopbs/scan"
 	"go.uber.org/goleak"
 )
 

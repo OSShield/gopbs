@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/scheiblingco/gopbs/catalog"
+	"github.com/osshield/gopbs/catalog"
 )
 
 // Hand-computed golden catalog: archive "a" containing dir "d" (with file

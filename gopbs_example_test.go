@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/scheiblingco/gopbs"
-	"github.com/scheiblingco/gopbs/archive"
-	"github.com/scheiblingco/gopbs/pbs"
-	"github.com/scheiblingco/gopbs/scan"
+	"github.com/osshield/gopbs"
+	"github.com/osshield/gopbs/archive"
+	"github.com/osshield/gopbs/pbs"
+	"github.com/osshield/gopbs/scan"
 )
 
 // A complete backup in one call: scan, plan, generate, chunk, deduplicate

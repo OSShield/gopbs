@@ -11,7 +11,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/scheiblingco/gopbs/chunker"
+	"github.com/osshield/gopbs/chunker"
 )
 
 // UploadStats summarizes one index upload.

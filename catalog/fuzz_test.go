@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/scheiblingco/gopbs/catalog"
+	"github.com/osshield/gopbs/catalog"
 )
 
 // FuzzDecode feeds arbitrary bytes to the catalog decoder: it must reject or

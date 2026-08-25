@@ -16,9 +16,9 @@ import (
 	"testing"
 	"time"
 
-	gopbs "github.com/scheiblingco/gopbs"
-	"github.com/scheiblingco/gopbs/archive"
-	"github.com/scheiblingco/gopbs/pbs"
+	gopbs "github.com/osshield/gopbs"
+	"github.com/osshield/gopbs/archive"
+	"github.com/osshield/gopbs/pbs"
 )
 
 // TestPerformance compares archive generation and upload throughput across

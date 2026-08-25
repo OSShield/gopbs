@@ -6,8 +6,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/scheiblingco/go-pxar/nodes"
-	"github.com/scheiblingco/go-pxar/pxar"
+	"github.com/osshield/go-pxar/nodes"
+	"github.com/osshield/go-pxar/pxar"
 )
 
 type PBSArchiveInterface interface {

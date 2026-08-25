@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/scheiblingco/gopbs/scan"
+	"github.com/osshield/gopbs/scan"
 )
 
 // The async payload source. A dispatcher opens payloads in plan order (each

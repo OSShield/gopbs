@@ -1,8 +1,8 @@
 package archive
 
 import (
-	"github.com/scheiblingco/gopbs/pxar"
-	"github.com/scheiblingco/gopbs/scan"
+	"github.com/osshield/gopbs/pxar"
+	"github.com/osshield/gopbs/scan"
 )
 
 // estimateV1 mirrors the emitter's record layout arithmetic using scan-time

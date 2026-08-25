@@ -21,8 +21,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/scheiblingco/gopbs/archive"
-	"github.com/scheiblingco/gopbs/pbs"
+	"github.com/osshield/gopbs/archive"
+	"github.com/osshield/gopbs/pbs"
 )
 
 // Format selects the pxar archive format.

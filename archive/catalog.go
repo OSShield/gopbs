@@ -6,8 +6,8 @@ import (
 	"io"
 	"strings"
 
-	"github.com/scheiblingco/gopbs/catalog"
-	"github.com/scheiblingco/gopbs/scan"
+	"github.com/osshield/gopbs/catalog"
+	"github.com/osshield/gopbs/scan"
 )
 
 // CatalogEntryName returns the name the catalog's top-level entry carries:

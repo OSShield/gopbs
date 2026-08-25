@@ -5,7 +5,7 @@ package scan_test
 import (
 	"testing"
 
-	"github.com/scheiblingco/gopbs/scan"
+	"github.com/osshield/gopbs/scan"
 )
 
 // FuzzParseACLXattr throws arbitrary bytes at the POSIX ACL xattr parser —

@@ -5,7 +5,7 @@ import (
 	"math"
 	"testing"
 
-	"github.com/scheiblingco/gopbs/catalog"
+	"github.com/osshield/gopbs/catalog"
 )
 
 func TestVarintU64Vectors(t *testing.T) {

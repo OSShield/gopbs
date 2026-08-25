@@ -5,7 +5,7 @@ import (
 	"encoding/binary"
 	"testing"
 
-	"github.com/scheiblingco/gopbs/pxar"
+	"github.com/osshield/gopbs/pxar"
 )
 
 func le64(v uint64) []byte { return binary.LittleEndian.AppendUint64(nil, v) }

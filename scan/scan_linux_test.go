@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/scheiblingco/gopbs/scan"
+	"github.com/osshield/gopbs/scan"
 	"golang.org/x/sys/unix"
 )
 

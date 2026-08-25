@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/scheiblingco/gopbs/pxar"
+	"github.com/osshield/gopbs/pxar"
 )
 
 // refLedger coordinates the two v2 streams: whoever binds payload sizes (the

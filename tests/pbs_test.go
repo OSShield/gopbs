@@ -16,10 +16,10 @@ import (
 	"testing"
 	"time"
 
-	gopbs "github.com/scheiblingco/gopbs"
-	"github.com/scheiblingco/gopbs/archive"
-	"github.com/scheiblingco/gopbs/chunker"
-	"github.com/scheiblingco/gopbs/pbs"
+	gopbs "github.com/osshield/gopbs"
+	"github.com/osshield/gopbs/archive"
+	"github.com/osshield/gopbs/chunker"
+	"github.com/osshield/gopbs/pbs"
 )
 
 // Connection details of the pmoxs3 service in compose.yml.
