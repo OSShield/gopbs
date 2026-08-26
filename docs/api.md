@@ -126,6 +126,27 @@ err := sess.Finish(ctx)
   `CloseDynamicIndex`, `UploadBlob`, `DownloadPrevious`,
   `ParseDynamicIndex`, `SplitIndexNames`, `BlobEncoder`.
 
+
+### Sessions through a proxy or tunnel
+
+`pbs.Config.DialSession` replaces the client's own TLS dial and HTTP/1.1
+`101 Switching Protocols` handshake. `StartBackup` calls it once per session
+and uses the returned `net.Conn` directly as the HTTP/2 transport, so the peer
+must already have completed the upgrade — typically a proxy that authenticates
+the client its own way, adds the PBS API token, opens the session against the
+real server and then pipes bytes. `BaseURL`, `Auth` and `Datastore` may be
+omitted in that configuration:
+
+```go
+client, err := pbs.NewClient(pbs.Config{
+    DialSession: func(ctx context.Context, ref pbs.SnapshotRef) (net.Conn, error) {
+        return tunnel.Open(ctx, ref) // returns the upgraded connection
+    },
+})
+```
+
+`gopbs.Backup` honours the setting through `BackupOptions.Client`.
+
 ## Lower layers
 
 - **`chunker`**: `Split(r, avg)` iterates content-defined chunks;
