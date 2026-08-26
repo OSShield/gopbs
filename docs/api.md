@@ -124,7 +124,34 @@ err := sess.Finish(ctx)
 - For custom flows the following primitives are exported:
   `CreateDynamicIndex`, `UploadDynamicChunk`, `AppendDynamicIndex`,
   `CloseDynamicIndex`, `UploadBlob`, `DownloadPrevious`,
-  `ParseDynamicIndex`, `SplitIndexNames`, `BlobEncoder`.
+  `ParseDynamicIndex`, `SplitIndexNames`, `BlobEncoder`, `ChunkDigest`.
+
+### Encryption
+
+```go
+info, _ := pbs.LoadKeyFile(keyJSON, []byte("passphrase")) // proxmox key.json
+cfg := pbs.Config{
+    // ...
+    Crypt: info.CryptConfig(pbs.CryptModeEncrypt),
+}
+```
+
+- `Config.Crypt` enables client-side encryption, fully compatible with
+  `proxmox-backup-client`: AES-256-GCM chunks and blobs, keyed chunk digests
+  (dedup keeps working per key, including against snapshots the official
+  client wrote with the same key), and a signed manifest carrying the key
+  fingerprint. `CryptModeSignOnly` uploads plaintext but still signs the
+  manifest. A nil `Crypt` is the plaintext "none" mode.
+- Key management: `GenerateEncryptionKey` (fresh random key),
+  `LoadKeyFile`/`CreateKeyFile` (proxmox `key.json`, scrypt- or
+  PBKDF2-protected or plain; created files should be written with mode
+  0600), `KeyInfo.CryptConfig` to plug a loaded key in.
+- `CryptConfig.MasterPublicKey` (RSA PEM) makes every backup include
+  `rsa-encrypted.key.blob` — the encryption key wrapped for the master-key
+  holder, so data survives a lost key file. Requires encrypt mode.
+- Low-level users: `UploadDynamicChunk`'s digest must be
+  `sess.ChunkDigest(plain)`, which applies the mode's digest rule.
+- Restore-side decryption is not part of the library (backup-only scope).
 
 ## Lower layers
 

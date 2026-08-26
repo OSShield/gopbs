@@ -167,7 +167,7 @@ func (s *BackupSession) uploadIndexStream(ctx context.Context, name string, r io
 			enc := NewBlobEncoder()
 			for j := range jobs {
 				d := chunkDone{seq: j.seq, offset: j.offset, size: uint64(len(j.data))}
-				d.digest = sha256.Sum256(j.data)
+				d.digest = s.ChunkDigest(j.data)
 
 				st, winner := s.known.claim(d.digest)
 				switch {

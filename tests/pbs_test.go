@@ -340,6 +340,119 @@ func TestBackupOrchestrator(t *testing.T) {
 	}
 }
 
+// TestBackupOrchestratorEncrypted is the encryption gate: a client-side
+// encrypted gopbs.Backup, restored and decrypted by the official
+// proxmox-backup-client using a key file gopbs itself created — proving
+// key-file, chunk-format and manifest interop in one round trip — then a
+// second run that must deduplicate fully against the previous snapshot's
+// keyed digests.
+func TestBackupOrchestratorEncrypted(t *testing.T) {
+	startPBSStack(t)
+	ctx := context.Background()
+
+	key, err := pbs.GenerateEncryptionKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyJSON, err := pbs.CreateKeyFile(key, nil, pbs.KDFNone, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(keysDir, "pbs-key.json"), keyJSON, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Load it back through the library — the restore below then has the
+	// official client consume the same file.
+	info, err := pbs.LoadKeyFile(keyJSON, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Key != key {
+		t.Fatal("key file round trip lost the key")
+	}
+
+	opts := gopbs.BackupOptions{
+		Client: pbs.Config{
+			BaseURL:      pmoxURL,
+			Auth:         pbs.PasswordAuth{Username: pmoxUser, Realm: pmoxRealm, Password: pmoxSecret},
+			Fingerprint:  pmoxFingerprint,
+			Datastore:    pmoxDatastore,
+			Workers:      4,
+			ChunkSizeAvg: 128 << 10,
+			Crypt:        info.CryptConfig(pbs.CryptModeEncrypt),
+		},
+		Archive: archive.Options{Name: "root"},
+		Ref:     pbs.SnapshotRef{Type: "host", ID: fmt.Sprintf("gopbs-e2e-enc-%d", time.Now().UnixNano())},
+		Paths:   []string{sourceDir},
+		Blobs: []gopbs.Blob{
+			{Name: "enc-meta.json", Data: []byte(`{"app":"gopbs-harness","encrypted":true}`)},
+		},
+	}
+
+	var result *gopbs.BackupResult
+	deadline := time.Now().Add(90 * time.Second)
+	for {
+		result, err = gopbs.Backup(ctx, opts)
+		if err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("backup did not succeed in time: %v", err)
+		}
+		time.Sleep(2 * time.Second)
+	}
+	t.Logf("encrypted backup 1: %+v (catalog %+v)", result.Archive, result.Catalog)
+
+	// The official client must decrypt the archive with our key file.
+	snapshot := fmt.Sprintf("%s/%s/%s", result.Ref.Type, result.Ref.ID,
+		result.Ref.Time.UTC().Format(time.RFC3339))
+	if err := compose("run", "--rm", "--remove-orphans",
+		"-e", "SNAPSHOT="+snapshot,
+		"-e", "ARCHIVE=root.pxar",
+		"-e", "TARGET=/restore/e2e-enc",
+		"-e", "KEYFILE=/keys/pbs-key.json",
+		"pbsrestore"); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	equal, err := compareTrees(filepath.Join(restoreDir, "e2e-enc"), sourceDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !equal {
+		t.Fatal("restored tree differs from source")
+	}
+
+	// Blobs are encrypted too; the official client must decrypt them.
+	if err := compose("run", "--rm", "--remove-orphans",
+		"-e", "SNAPSHOT="+snapshot,
+		"-e", "ARCHIVE=enc-meta.json.blob",
+		"-e", "TARGET=/restore/e2e-enc-meta.json",
+		"-e", "KEYFILE=/keys/pbs-key.json",
+		"pbsrestore"); err != nil {
+		t.Fatalf("restoring blob: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(restoreDir, "e2e-enc-meta.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, opts.Blobs[0].Data) {
+		t.Errorf("blob restored %d bytes, want %d", len(got), len(opts.Blobs[0].Data))
+	}
+
+	// Second backup of unchanged content: the keyed digests must match the
+	// previous snapshot's index, so everything deduplicates.
+	time.Sleep(2 * time.Second) // pmoxs3 resolves "previous" at seconds granularity
+	opts.Ref.Time = time.Time{}
+	result2, err := gopbs.Backup(ctx, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("encrypted backup 2: %+v (catalog %+v)", result2.Archive, result2.Catalog)
+	if result2.Archive.NewChunks != 0 || result2.Archive.ReusedChunks != result2.Archive.ChunkCount {
+		t.Errorf("second backup should deduplicate fully: %+v", result2.Archive)
+	}
+}
+
 // TestBackupOrchestratorV2 is the phase-10 gate: one gopbs.Backup call in
 // FormatV2 (split mpxar/ppxar, no catalog) against the pmoxs3 stack, restored
 // with the official proxmox-backup-client — addressed as "root.pxar" to prove

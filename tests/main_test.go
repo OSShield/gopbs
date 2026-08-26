@@ -37,6 +37,7 @@ const (
 	sourceDir  = "./.test-source"
 	pxarDir    = "./.test-pxar"
 	restoreDir = "./.test-restore"
+	keysDir    = "./.test-keys"
 )
 
 func TestMain(m *testing.M) {
@@ -160,7 +161,7 @@ func randInt(max int64) int64 {
 	return n.Int64()
 }
 
-// cleanAll resets the three work directories, keeping their .gitkeep files.
+// cleanAll resets the work directories, keeping their .gitkeep files.
 func cleanAll() {
 	clean := func(dir string, keep func(string) bool) {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -183,6 +184,7 @@ func cleanAll() {
 	clean(sourceDir, notGitkeep)
 	clean(pxarDir, notGitkeep)
 	clean(restoreDir, notGitkeep)
+	clean(keysDir, notGitkeep)
 }
 
 // compareTrees reports whether two directory trees are identical in

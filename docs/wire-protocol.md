@@ -132,14 +132,34 @@ u32  crc32 (IEEE) of everything after this 12-byte header
 [payload]
 ```
 
+Encrypted blobs (`Config.Crypt` in encrypt mode) extend the header to 44
+bytes; the CRC then covers only the ciphertext:
+
+```
+u64      magic
+u32      crc32 (IEEE) of the ciphertext
+[16]byte AES-256-GCM IV (random per blob; PBS uses a 16-byte IV, not GCM's
+         default 12)
+[16]byte GCM tag
+[ciphertext]  (AAD is empty)
+```
+
 | Magic (byte sequence) | Meaning |
 |---|---|
 | `42 ab 38 07 be 83 70 a1` | uncompressed |
 | `31 b9 58 42 6f b6 a3 7f` | zstd-compressed |
+| `7b 67 85 be 22 2d 4c f0` | encrypted |
+| `e6 59 1b bf 0b bf d8 0b` | zstd-compressed, then encrypted |
 
-The encoder compresses with zstd and keeps the smaller
-representation — the decision is made before framing. Encrypted variants
-exist in the format but are not implemented by gopbs.
+The encoder compresses with zstd and keeps the smaller representation — the
+decision is made before framing (and before encryption; the payload is
+compressed first, then sealed). `/dynamic_chunk` parameters keep their
+meaning under encryption: `size` is the plaintext length, `encoded-size` the
+framed length, and `digest` becomes the keyed digest
+`SHA256(plaintext ‖ id_key)` where
+`id_key = PBKDF2-HMAC-SHA256(key, "_id_key", 10 iterations)` — the digest
+namespace the official client uses, so deduplication works per key. The
+server never verifies encrypted digests; it trusts the client.
 
 ## 5. Dynamic index (.didx) and manifest
 
@@ -174,6 +194,23 @@ before `/finish`:
 `csum`/`size` for an index are the values passed to `/dynamic_close`; for a
 blob, the sha256 and size of the encoded blob as stored. The manifest blob
 itself is stored uncompressed, matching the reference clients.
+
+With a key configured (`Config.Crypt`), each file entry carries its
+crypt-mode (`encrypt` or `sign-only`; the manifest itself stays `none` — it
+is never encrypted), and the manifest gains:
+
+- `signature`: hex of `HMAC-SHA256(id_key, canonical_json)`, where the
+  canonical form is the manifest without its `signature` and `unprotected`
+  members — object keys sorted bytewise, no whitespace, serde_json string
+  escaping (byte-identical to `proxmox_serde::to_canonical_json`);
+- `unprotected["key-fingerprint"]`: colon-separated hex of
+  `SHA256(SHA256("Proxmox Backup Encryption Key Fingerprint") ‖ id_key)` —
+  deliberately outside the signed portion, matching upstream.
+
+With a master public key configured, one extra blob precedes the manifest:
+`rsa-encrypted.key.blob`, the unprotected KeyConfig JSON encrypted with the
+master RSA key (PKCS#1 v1.5), framed as a plain uncompressed blob but listed
+with crypt-mode `encrypt`.
 
 ## 6. Archive naming
 

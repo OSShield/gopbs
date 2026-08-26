@@ -24,7 +24,8 @@ const (
 // ticket. Safe for concurrent use.
 type Client struct {
 	cfg      Config
-	addr     string // host:port
+	crypt    *cryptState // nil when Config.Crypt is nil
+	addr     string      // host:port
 	tlsConf  *tls.Config
 	restHTTP *http.Client // HTTP/1.1 client for the regular API (ticket login)
 
@@ -49,6 +50,13 @@ func NewClient(cfg Config) (*Client, error) {
 	if cfg.ChunkSizeAvg != 0 && cfg.ChunkSizeAvg&(cfg.ChunkSizeAvg-1) != 0 {
 		return nil, fmt.Errorf("pbs: ChunkSizeAvg %d is not a power of two", cfg.ChunkSizeAvg)
 	}
+	var crypt *cryptState
+	if cfg.Crypt != nil {
+		var err error
+		if crypt, err = newCryptState(cfg.Crypt); err != nil {
+			return nil, err
+		}
+	}
 	addr, err := hostPort(cfg.BaseURL)
 	if err != nil {
 		return nil, err
@@ -59,6 +67,7 @@ func NewClient(cfg Config) (*Client, error) {
 	}
 	return &Client{
 		cfg:     cfg,
+		crypt:   crypt,
 		addr:    addr,
 		tlsConf: tlsConf,
 		restHTTP: &http.Client{

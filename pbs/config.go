@@ -67,6 +67,11 @@ type Config struct {
 	// Must be a power of two.
 	ChunkSizeAvg uint64
 
+	// Crypt enables client-side encryption (or manifest signing) with the
+	// given key; nil uploads plaintext with crypt-mode "none". Treated as
+	// read-only after NewClient.
+	Crypt *CryptConfig
+
 	// OnUploadProgress, when set, is called by the upload pipeline as chunks
 	// are committed to an index, in stream order (Stats.Size grows
 	// monotonically per index), and once more with done=true after the index
