@@ -7,9 +7,11 @@ import (
 	"io"
 	"os"
 	"runtime"
+	"sort"
 	"sync"
 	"time"
 
+	"github.com/osshield/gopbs/pxar"
 	"github.com/osshield/gopbs/scan"
 )
 
@@ -66,6 +68,9 @@ const (
 type addition struct {
 	kind rootKind
 	path string
+	// as is the entry's name in the archive: its child name under the
+	// virtual root and the prefix used for hardlink target resolution.
+	as string
 }
 
 // Archive accumulates roots and generates PXAR streams. Not safe for
@@ -90,8 +95,18 @@ func New(opts Options) (*Archive, error) {
 
 // AddDirectory queues a directory tree. A single queued directory becomes the
 // archive root; any other combination is placed under a virtual root named
-// Options.Name.
+// Options.Name, where the directory appears under its own basename.
 func (a *Archive) AddDirectory(path string) error {
+	return a.AddDirectoryAs(path, baseName(path))
+}
+
+// AddDirectoryAs queues a directory tree like AddDirectory, but under the
+// name as instead of the directory's basename. as must be a single path
+// component: non-empty, not "." or "..", and free of '/' and NUL. Two
+// queued roots may not share a name. When the directory is the archive's
+// only root the PXAR root entry carries no name, so as only affects the
+// multi-root layout.
+func (a *Archive) AddDirectoryAs(path, as string) error {
 	info, err := os.Lstat(path)
 	if err != nil {
 		return fmt.Errorf("archive: %w", err)
@@ -99,7 +114,10 @@ func (a *Archive) AddDirectory(path string) error {
 	if !info.IsDir() {
 		return fmt.Errorf("archive: %s is not a directory", path)
 	}
-	a.adds = append(a.adds, addition{addDir, path})
+	if err := pxar.ValidateFilename(as); err != nil {
+		return fmt.Errorf("archive: %w", err)
+	}
+	a.adds = append(a.adds, addition{addDir, path, as})
 	return nil
 }
 
@@ -107,6 +125,24 @@ func (a *Archive) AddDirectory(path string) error {
 func (a *Archive) AddDirectories(paths []string) error {
 	for _, p := range paths {
 		if err := a.AddDirectory(p); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// AddDirectoriesAs queues several directory trees, each under the name it
+// maps to (path -> as). Entries are processed in sorted path order so the
+// first error reported is deterministic; on error, paths sorting before the
+// failing one have already been queued.
+func (a *Archive) AddDirectoriesAs(paths map[string]string) error {
+	sorted := make([]string, 0, len(paths))
+	for p := range paths {
+		sorted = append(sorted, p)
+	}
+	sort.Strings(sorted)
+	for _, p := range sorted {
+		if err := a.AddDirectoryAs(p, paths[p]); err != nil {
 			return err
 		}
 	}
@@ -122,7 +158,7 @@ func (a *Archive) AddFile(path string) error {
 	if info.IsDir() {
 		return fmt.Errorf("archive: %s is a directory (use AddDirectory)", path)
 	}
-	a.adds = append(a.adds, addition{addFile, path})
+	a.adds = append(a.adds, addition{addFile, path, baseName(path)})
 	return nil
 }
 
@@ -179,17 +215,20 @@ func (a *Archive) buildTree() (*scan.Node, error) {
 			n   *scan.Node
 			err error
 		)
-		// The archive path prefix is the entry's basename: its path under
-		// the virtual root, used for hardlink target resolution.
+		// The archive path prefix is the entry's archive name: its path
+		// under the virtual root, used for hardlink target resolution.
 		switch add.kind {
 		case addDir:
-			n, err = s.ScanDirectory(add.path, baseName(add.path))
+			n, err = s.ScanDirectory(add.path, add.as)
 		case addFile:
-			n, err = s.ScanFile(add.path, baseName(add.path))
+			n, err = s.ScanFile(add.path, add.as)
 		}
 		if err != nil {
 			return nil, err
 		}
+		// The scanner names the node after its on-disk basename; the
+		// archive name may differ (AddDirectoryAs).
+		n.Name = add.as
 		children = append(children, n)
 	}
 	children = append(children, a.streams...)

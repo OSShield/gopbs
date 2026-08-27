@@ -79,7 +79,7 @@ run two indexes concurrently, so calls can arrive from two goroutines.
 
 ```go
 a, _ := archive.New(archive.Options{Name: "root", Workers: 0})
-a.AddDirectory("/etc")               // also: AddFile, AddStream, plural forms
+a.AddDirectory("/etc")               // also: AddDirectoryAs(path, as), AddFile, AddStream, plural forms
 stream, _ := a.GenerateV1(ctx)       // io.ReadCloser; Close aborts generation
 ```
 
@@ -152,6 +152,27 @@ cfg := pbs.Config{
 - Low-level users: `UploadDynamicChunk`'s digest must be
   `sess.ChunkDigest(plain)`, which applies the mode's digest rule.
 - Restore-side decryption is not part of the library (backup-only scope).
+
+
+### Sessions through a proxy or tunnel
+
+`pbs.Config.DialSession` replaces the client's own TLS dial and HTTP/1.1
+`101 Switching Protocols` handshake. `StartBackup` calls it once per session
+and uses the returned `net.Conn` directly as the HTTP/2 transport, so the peer
+must already have completed the upgrade — typically a proxy that authenticates
+the client its own way, adds the PBS API token, opens the session against the
+real server and then pipes bytes. `BaseURL`, `Auth` and `Datastore` may be
+omitted in that configuration:
+
+```go
+client, err := pbs.NewClient(pbs.Config{
+    DialSession: func(ctx context.Context, ref pbs.SnapshotRef) (net.Conn, error) {
+        return tunnel.Open(ctx, ref) // returns the upgraded connection
+    },
+})
+```
+
+`gopbs.Backup` honours the setting through `BackupOptions.Client`.
 
 ## Lower layers
 

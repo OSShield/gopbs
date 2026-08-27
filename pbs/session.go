@@ -83,19 +83,30 @@ func (c *Client) StartBackup(ctx context.Context, ref SnapshotRef) (*BackupSessi
 		query.Set("ns", c.cfg.Namespace)
 	}
 
-	header := make(http.Header)
-	if err := c.authHeaders(ctx, header, false); err != nil {
-		return nil, err
-	}
-	header.Set("Upgrade", backupProtocol)
-	header.Set("Connection", "Upgrade")
+	var conn net.Conn
+	if c.cfg.DialSession != nil {
+		// The caller's dialer hands back a connection that already carries the
+		// backup protocol (e.g. a tunnel through a proxy that performed the
+		// upgrade with its own credentials).
+		conn, err = c.cfg.DialSession(ctx, ref)
+		if err != nil {
+			return nil, fmt.Errorf("pbs: dialing session: %w", err)
+		}
+	} else {
+		header := make(http.Header)
+		if err := c.authHeaders(ctx, header, false); err != nil {
+			return nil, err
+		}
+		header.Set("Upgrade", backupProtocol)
+		header.Set("Connection", "Upgrade")
 
-	// The double slash mirrors proxmox-backup-client's upgrade request
-	// verbatim: the real server normalizes it, and pmoxs3backuproxy matches
-	// on exactly this prefix.
-	conn, err := c.upgrade(ctx, "//api2/json/backup?"+query.Encode(), header)
-	if err != nil {
-		return nil, err
+		// The double slash mirrors proxmox-backup-client's upgrade request
+		// verbatim: the real server normalizes it, and pmoxs3backuproxy matches
+		// on exactly this prefix.
+		conn, err = c.upgrade(ctx, "//api2/json/backup?"+query.Encode(), header)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	cc, err := (&http2.Transport{}).NewClientConn(conn)

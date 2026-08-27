@@ -391,3 +391,128 @@ func TestGenerateCatalog(t *testing.T) {
 		t.Errorf("a.fifo: %+v", p)
 	}
 }
+
+// AddDirectoryAs places a directory under a caller-chosen name, and
+// hardlink targets resolve through that name rather than the on-disk basename.
+func TestAddDirectoryAs(t *testing.T) {
+	base := t.TempDir()
+	d1 := filepath.Join(base, "d1")
+	d2 := filepath.Join(base, "d2")
+	for _, d := range []string{d1, d2} {
+		if err := os.Mkdir(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(d1, "orig"), []byte("shared"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(filepath.Join(d1, "orig"), filepath.Join(d2, "linked")); err != nil {
+		t.Fatal(err)
+	}
+
+	a, err := archive.New(archive.Options{Name: "backup"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.AddDirectoryAs(d1, "etc"); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.AddDirectoryAs(d2, "var"); err != nil {
+		t.Fatal(err)
+	}
+
+	dec, err := parseArchive(generate(t, a))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, c := range dec.children {
+		names = append(names, c.name)
+	}
+	if strings.Join(names, ",") != "etc,var" {
+		t.Errorf("root children: %v", names)
+	}
+	if dec.find("d1") != nil || dec.find("d2") != nil {
+		t.Errorf("on-disk basenames leaked into the archive: %v", names)
+	}
+	hl := dec.find("var/linked")
+	orig := dec.find("etc/orig")
+	if hl == nil || orig == nil || hl.hardlink.target != "etc/orig" {
+		t.Fatalf("renamed-root hardlink: %+v", hl)
+	}
+	if got := hl.start - hl.hardlink.offset; got != orig.start {
+		t.Errorf("hardlink offset resolves to %d, target at %d", got, orig.start)
+	}
+}
+
+// AddDirectoriesAs queues every entry of the map; invalid names and
+// non-directories are rejected at Add time, duplicates at generate time.
+func TestAddDirectoriesAs(t *testing.T) {
+	base := t.TempDir()
+	d1 := filepath.Join(base, "same")
+	d2 := filepath.Join(base, "nested", "same")
+	if err := os.MkdirAll(d2, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(d1, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(d1, "a"), []byte("1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(d2, "b"), []byte("2"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(base, "file")
+	if err := os.WriteFile(file, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Two directories with the same basename would collide under
+	// AddDirectories; renaming resolves it.
+	a, err := archive.New(archive.Options{Name: "backup"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.AddDirectoriesAs(map[string]string{d1: "first", d2: "second"}); err != nil {
+		t.Fatal(err)
+	}
+	dec, err := parseArchive(generate(t, a))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, c := range dec.children {
+		names = append(names, c.name)
+	}
+	if strings.Join(names, ",") != "first,second" {
+		t.Errorf("root children: %v", names)
+	}
+	if dec.find("first/a") == nil || dec.find("second/b") == nil {
+		t.Errorf("children not found under renamed roots")
+	}
+
+	// Invalid archive names are rejected at Add time.
+	for _, bad := range []string{"", ".", "..", "a/b", "nul\x00"} {
+		a, _ := archive.New(archive.Options{Name: "backup"})
+		if err := a.AddDirectoryAs(d1, bad); err == nil {
+			t.Errorf("AddDirectoryAs(%q): expected error", bad)
+		}
+	}
+
+	// Non-directories are rejected, and paths sorting before the failing
+	// one have already been queued.
+	a, _ = archive.New(archive.Options{Name: "backup"})
+	if err := a.AddDirectoriesAs(map[string]string{d1: "x", file: "y"}); err == nil {
+		t.Error("AddDirectoriesAs with a file: expected error")
+	}
+
+	// Two roots renamed to the same name collide at generate time.
+	a, _ = archive.New(archive.Options{Name: "backup"})
+	if err := a.AddDirectoriesAs(map[string]string{d1: "dup", d2: "dup"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.GenerateV1(context.Background()); err == nil || !strings.Contains(err.Error(), "duplicate") {
+		t.Errorf("duplicate archive names: got %v", err)
+	}
+}

@@ -1,7 +1,9 @@
 package pbs
 
 import (
+	"context"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"strings"
@@ -71,6 +73,16 @@ type Config struct {
 	// given key; nil uploads plaintext with crypt-mode "none". Treated as
 	// read-only after NewClient.
 	Crypt *CryptConfig
+  
+	// DialSession, when set, replaces the built-in TLS dial and HTTP/1.1
+	// protocol upgrade: StartBackup calls it once per session and expects a
+	// connection on which the backup protocol has already been negotiated —
+	// the peer answered 101 Switching Protocols and now speaks HTTP/2. Use it
+	// to run the session through a proxy or tunnel that performs the upgrade
+	// (and holds the PBS credentials) on the client's behalf. With
+	// DialSession set, BaseURL, Auth and Datastore are optional and the TLS
+	// settings (Fingerprint, InsecureSkipAll) do not apply to the session.
+	DialSession func(ctx context.Context, ref SnapshotRef) (net.Conn, error)
 
 	// OnUploadProgress, when set, is called by the upload pipeline as chunks
 	// are committed to an index, in stream order (Stats.Size grows

@@ -51,7 +51,7 @@ type BackupOptions struct {
 	// Ref identifies the snapshot; zero-value fields get the usual defaults
 	// (type "host", hostname id, current time).
 	Ref pbs.SnapshotRef
-	// Format selects the archive format; only FormatV1 is implemented.
+	// Format selects the archive format (FormatV1 or FormatV2).
 	Format Format
 	// Paths are the directories and files to back up. A single directory
 	// becomes the archive root; any other combination lives under a virtual

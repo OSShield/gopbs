@@ -38,10 +38,10 @@ type Client struct {
 // NewClient validates the configuration. No connection is made until
 // StartBackup (or the first ticket login).
 func NewClient(cfg Config) (*Client, error) {
-	if cfg.Auth == nil {
+	if cfg.Auth == nil && cfg.DialSession == nil {
 		return nil, fmt.Errorf("pbs: Config.Auth is required")
 	}
-	if cfg.Datastore == "" {
+	if cfg.Datastore == "" && cfg.DialSession == nil {
 		return nil, fmt.Errorf("pbs: Config.Datastore is required")
 	}
 	if cfg.Workers < 0 {
@@ -57,14 +57,22 @@ func NewClient(cfg Config) (*Client, error) {
 			return nil, err
 		}
 	}
-	addr, err := hostPort(cfg.BaseURL)
-	if err != nil {
-		return nil, err
+
+	// With DialSession the address only labels requests on the session
+	// connection (the :authority pseudo-header); BaseURL may be omitted.
+	addr := "localhost:8007"
+	if cfg.BaseURL != "" || cfg.DialSession == nil {
+		var err error
+		if addr, err = hostPort(cfg.BaseURL); err != nil {
+			return nil, err
+		}
 	}
+  
 	tlsConf, err := newTLSConfig(cfg)
 	if err != nil {
 		return nil, err
 	}
+  
 	return &Client{
 		cfg:     cfg,
 		crypt:   crypt,
