@@ -79,7 +79,7 @@ run two indexes concurrently, so calls can arrive from two goroutines.
 
 ```go
 a, _ := archive.New(archive.Options{Name: "root", Workers: 0})
-a.AddDirectory("/etc")               // also: AddFile, AddStream, plural forms
+a.AddDirectory("/etc")               // also: AddDirectoryAs(path, as), AddFile, AddStream, plural forms
 stream, _ := a.GenerateV1(ctx)       // io.ReadCloser; Close aborts generation
 ```
 
