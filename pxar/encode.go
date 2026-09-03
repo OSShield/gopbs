@@ -246,6 +246,17 @@ func AppendFormatVersion(dst []byte, version uint64) []byte {
 	return binary.LittleEndian.AppendUint64(dst, version)
 }
 
+// SizePrelude returns the encoded size of a TypePrelude record.
+func SizePrelude(data []byte) uint64 { return HeaderSize + uint64(len(data)) }
+
+// AppendPrelude encodes the v2 prelude: opaque bytes following the format
+// version record. proxmox-backup-client stores its exclude pattern list here
+// (one pattern per line) and omits the record when there are none.
+func AppendPrelude(dst, data []byte) []byte {
+	dst = appendHeader(dst, TypePrelude, SizePrelude(data))
+	return append(dst, data...)
+}
+
 // PayloadRefSize is the full encoded size of a TypePayloadRef record.
 const PayloadRefSize = HeaderSize + 16
 
