@@ -33,6 +33,7 @@ Then the tests:
 | `TestCatalogComparison` | The gopbs catalog describes the source tree exactly and is semantically identical to tizbac's reference catalog. |
 | `TestPBSBackupSession` | The raw `pbs` protocol client against pmoxs3: manual chunked backup, then a second snapshot deduplicating everything via `/previous`. |
 | `TestBackupOrchestrator` | End-to-end `gopbs.Backup` (v1): upload to pmoxs3, restore with the official `proxmox-backup-client`, tree comparison, full second-run dedup. |
+| `TestBackupOrchestratorEncrypted` | Client-side encrypted `gopbs.Backup`, restored and decrypted by the official client using a key file gopbs created (written to `.test-keys/`, passed via `KEYFILE`) — key-file, chunk-format and manifest interop in one round trip; second run deduplicates fully against the previous snapshot's keyed digests. |
 | `TestBackupOrchestratorV2` | The same in `FormatV2`, restored as `root.pxar` to exercise the official client's split-name fallback; full dedup on both indexes. |
 | `TestPerformance` | Opt-in throughput comparison (below). |
 
@@ -46,7 +47,7 @@ Then the tests:
 | `tizbac` | Reference Go implementation creating `tizbac.pxar`. |
 | `gopbs` / `gopbssplit` | `cmd/gopbs-pxar` built from the working tree. |
 | `restore` | Extracts all archives with the official `pxar` CLI. |
-| `pbsrestore` | One-off `proxmox-backup-client restore` from the pmoxs3 stack (`SNAPSHOT`/`ARCHIVE`/`TARGET` via env). Runs as root — restoring ownership needs it — and chmods the result so the host user can clean up. |
+| `pbsrestore` | One-off `proxmox-backup-client restore` from the pmoxs3 stack (`SNAPSHOT`/`ARCHIVE`/`TARGET` via env; optional `KEYFILE` decrypts with a key file from the read-only `.test-keys/` mount). Runs as root — restoring ownership needs it — and chmods the result so the host user can clean up. |
 | `pbsbackup` | One-off `proxmox-backup-client backup` to the pmoxs3 stack (`SUBDIR`/`BACKUPID`/`MODE` via env; `MODE` is the change-detection mode: `legacy` = v1, `metadata` = v2 split). Used by the performance test. |
 
 The pmoxs3 stack is started on demand by the tests that need it and torn

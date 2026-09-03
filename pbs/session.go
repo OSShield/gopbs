@@ -129,6 +129,26 @@ func (c *Client) StartBackup(ctx context.Context, ref SnapshotRef) (*BackupSessi
 // resolved (the exact values a restore later addresses).
 func (s *BackupSession) Ref() SnapshotRef { return s.ref }
 
+// cryptLabel is the manifest crypt-mode for data this session uploads.
+func (s *BackupSession) cryptLabel() string {
+	if cs := s.client.crypt; cs != nil {
+		return string(cs.mode)
+	}
+	return "none"
+}
+
+// ChunkDigest returns the chunk digest for plain under this session's crypt
+// mode: SHA-256 of the plaintext normally and in sign-only mode, the keyed
+// digest SHA256(plain ‖ id_key) in encrypt mode. Digests — never ciphertext
+// — drive deduplication, so identical plaintext under the same key
+// deduplicates across backups.
+func (s *BackupSession) ChunkDigest(plain []byte) [32]byte {
+	if cs := s.client.crypt; cs != nil && cs.mode == CryptModeEncrypt {
+		return cs.computeDigest(plain)
+	}
+	return sha256.Sum256(plain)
+}
+
 // upgrade performs the HTTP/1.1 101 handshake and returns the raw connection
 // (with any bytes the server sent after the 101 preserved).
 func (c *Client) upgrade(ctx context.Context, path string, header http.Header) (net.Conn, error) {
@@ -254,7 +274,7 @@ func (s *BackupSession) CreateDynamicIndex(ctx context.Context, name string) (ui
 
 	s.mu.Lock()
 	s.byWID[parsed.Data] = len(s.files)
-	s.files = append(s.files, manifestFile{Filename: name, CryptMode: "none"})
+	s.files = append(s.files, manifestFile{Filename: name, CryptMode: s.cryptLabel()})
 	s.mu.Unlock()
 	return parsed.Data, nil
 }
@@ -312,11 +332,19 @@ func (s *BackupSession) CloseDynamicIndex(ctx context.Context, wid uint64, csum 
 	return nil
 }
 
-// UploadDynamicChunk uploads one content chunk (plaintext; framing and
-// compression are handled here) for the given index writer. digest must be
-// the sha256 of plain.
+// UploadDynamicChunk uploads one content chunk (plaintext; framing,
+// compression and encryption are handled here) for the given index writer.
+// digest must be ChunkDigest(plain).
 func (s *BackupSession) UploadDynamicChunk(ctx context.Context, enc *BlobEncoder, wid uint64, digest [32]byte, plain []byte) error {
-	framed := enc.Encode(plain, true)
+	var framed []byte
+	if cs := s.client.crypt; cs != nil && cs.mode == CryptModeEncrypt {
+		var err error
+		if framed, err = enc.encodeEncrypted(plain, true, cs.aead); err != nil {
+			return err
+		}
+	} else {
+		framed = enc.Encode(plain, true)
+	}
 	query := url.Values{
 		"digest":       {hex.EncodeToString(digest[:])},
 		"encoded-size": {strconv.Itoa(len(framed))},
@@ -327,13 +355,31 @@ func (s *BackupSession) UploadDynamicChunk(ctx context.Context, enc *BlobEncoder
 	return err
 }
 
-// UploadBlob frames data as a blob (optionally zstd-compressed), uploads it
-// under filename (e.g. "pct.conf.blob"), and records it in the manifest with
-// the size and sha256 of the encoded blob as stored by the server (matching
-// the reference client — the restore path verifies both against the stored
+// UploadBlob frames data as a blob (optionally zstd-compressed, encrypted
+// when the session has a key in encrypt mode), uploads it under filename
+// (e.g. "pct.conf.blob"), and records it in the manifest with the size and
+// sha256 of the encoded blob as stored by the server (matching the
+// reference client — the restore path verifies both against the stored
 // file).
 func (s *BackupSession) UploadBlob(ctx context.Context, enc *BlobEncoder, filename string, data []byte, compress bool) error {
-	framed := enc.Encode(data, compress)
+	var framed []byte
+	if cs := s.client.crypt; cs != nil && cs.mode == CryptModeEncrypt {
+		var err error
+		if framed, err = enc.encodeEncrypted(data, compress, cs.aead); err != nil {
+			return err
+		}
+	} else {
+		framed = enc.Encode(data, compress)
+	}
+	return s.putBlob(ctx, filename, framed, s.cryptLabel())
+}
+
+// putBlob uploads an already-framed blob and records it in the manifest
+// under the given crypt-mode label. Framing and label are decoupled because
+// two special blobs mismatch on purpose: "rsa-encrypted.key.blob" is framed
+// plain but labeled "encrypt", and "index.json.blob" is always plain with
+// label "none".
+func (s *BackupSession) putBlob(ctx context.Context, filename string, framed []byte, label string) error {
 	query := url.Values{
 		"file-name":    {filename},
 		"encoded-size": {strconv.Itoa(len(framed))},
@@ -348,7 +394,7 @@ func (s *BackupSession) UploadBlob(ctx context.Context, enc *BlobEncoder, filena
 		Filename:  filename,
 		Size:      uint64(len(framed)),
 		Csum:      hex.EncodeToString(sum[:]),
-		CryptMode: "none",
+		CryptMode: label,
 	})
 	s.mu.Unlock()
 	return nil
@@ -373,13 +419,34 @@ func (s *BackupSession) DownloadPrevious(ctx context.Context, archiveName string
 }
 
 // Finish uploads the manifest, commits the snapshot and closes the
-// connection. The session is unusable afterwards.
+// connection. With a key configured the manifest is signed (and carries the
+// key fingerprint); with a master key, the wrapped encryption key is
+// uploaded alongside so its holder can recover the data. The session is
+// unusable afterwards.
 func (s *BackupSession) Finish(ctx context.Context) error {
 	s.mu.Lock()
 	if s.finished {
 		s.mu.Unlock()
 		return fmt.Errorf("pbs: session already finished")
 	}
+	s.mu.Unlock()
+
+	cs := s.client.crypt
+	if cs != nil && cs.masterKey != nil {
+		wrapped, err := wrapKeyConfig(cs, time.Now())
+		if err != nil {
+			return err
+		}
+		// The RSA ciphertext is framed plain (it is already opaque) but
+		// recorded as "encrypt", matching proxmox-backup-client; uploaded
+		// before the manifest is built so the signature covers it.
+		framed := NewBlobEncoder().Encode(wrapped, false)
+		if err := s.putBlob(ctx, "rsa-encrypted.key.blob", framed, string(CryptModeEncrypt)); err != nil {
+			return err
+		}
+	}
+
+	s.mu.Lock()
 	manifest := backupManifest{
 		BackupID:    s.ref.ID,
 		BackupTime:  s.ref.Time.Unix(),
@@ -389,13 +456,24 @@ func (s *BackupSession) Finish(ctx context.Context) error {
 	}
 	s.mu.Unlock()
 
+	if cs != nil {
+		canon, err := canonicalManifestJSON(manifest)
+		if err != nil {
+			return err
+		}
+		sig := cs.authTag(canon)
+		manifest.Signature = hex.EncodeToString(sig[:])
+		// Deliberately outside the signed portion, matching upstream.
+		manifest.Unprotected["key-fingerprint"] = cs.fingerprintHex()
+	}
+
 	data, err := json.Marshal(manifest)
 	if err != nil {
 		return fmt.Errorf("pbs: encoding manifest: %w", err)
 	}
-	// The manifest blob is stored uncompressed, matching the reference
-	// clients.
-	if err := s.UploadBlob(ctx, NewBlobEncoder(), "index.json.blob", data, false); err != nil {
+	// The manifest blob is stored uncompressed and never encrypted, matching
+	// the reference clients; the signature travels inside it.
+	if err := s.putBlob(ctx, "index.json.blob", NewBlobEncoder().Encode(data, false), "none"); err != nil {
 		return err
 	}
 	if _, err := s.roundTrip(ctx, http.MethodPost, "/finish", nil, nil); err != nil {

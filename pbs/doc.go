@@ -6,4 +6,9 @@
 // with zstd compression and deduplication against the previous snapshot,
 // blobs, manifest and finish. Chunk uploads run on a parallel pipeline while
 // index order is preserved by sequence numbers.
+//
+// Client-side encryption (Config.Crypt) is compatible with
+// proxmox-backup-client: AES-256-GCM chunks and blobs, keyed chunk digests
+// so deduplication works per key, signed manifests, proxmox key.json files
+// (LoadKeyFile/CreateKeyFile) and RSA master-key wrapping.
 package pbs

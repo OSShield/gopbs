@@ -41,7 +41,8 @@ const (
 // BackupOptions configures one Backup call.
 type BackupOptions struct {
 	// Client configures the PBS connection (server, auth, datastore,
-	// namespace, upload workers, chunk size).
+	// namespace, upload workers, chunk size). Set Client.Crypt to encrypt
+	// the backup client-side (or sign its manifest); see pbs.CryptConfig.
 	Client pbs.Config
 	// Archive configures generation (name, workers, buffer, scan policy).
 	// Its OnWarn is honored in addition to warnings being collected into
@@ -92,7 +93,8 @@ type Stream struct {
 // "<Name>.blob" (the suffix is appended when missing), zstd-compressed when
 // that is smaller. Data is held in memory — blobs are for small metadata;
 // bulk content belongs in the archive or a Stream. The name "index.json" is
-// reserved for the manifest.
+// reserved for the manifest, "rsa-encrypted.key" for the wrapped encryption
+// key. Blobs are encrypted when Client.Crypt is in encrypt mode.
 type Blob struct {
 	Name string
 	Data []byte
@@ -294,6 +296,9 @@ func blobFileNames(blobs []Blob) ([]string, error) {
 		}
 		if name == "index.json.blob" {
 			return nil, fmt.Errorf("gopbs: blob name %q is reserved for the manifest", name)
+		}
+		if name == "rsa-encrypted.key.blob" {
+			return nil, fmt.Errorf("gopbs: blob name %q is reserved for the master-key-wrapped encryption key", name)
 		}
 		if seen[name] {
 			return nil, fmt.Errorf("gopbs: duplicate blob name %q", name)

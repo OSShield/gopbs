@@ -9,8 +9,11 @@ package pbs_test
 import (
 	"bufio"
 	"bytes"
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/ecdsa"
 	"crypto/elliptic"
+	"crypto/pbkdf2"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
@@ -52,6 +55,11 @@ type mockPBS struct {
 	baseURL     string
 
 	zdec *zstd.Decoder
+
+	// cryptKey/idKey let the mock verify encrypted uploads the way the
+	// client-side spec says a reader would; set via setCryptKey.
+	cryptKey *[32]byte
+	idKey    [32]byte
 
 	mu           sync.Mutex
 	loginCount   int
@@ -346,7 +354,7 @@ func (m *mockPBS) handleH2(w http.ResponseWriter, r *http.Request) {
 		if delay != nil {
 			time.Sleep(delay(q.Get("digest")))
 		}
-		plain, err := m.decodeBlob(body)
+		plain, encrypted, err := m.decodeBlob(body)
 		if err != nil {
 			httpError(w, 400, "chunk: %v", err)
 			return
@@ -359,8 +367,15 @@ func (m *mockPBS) handleH2(w http.ResponseWriter, r *http.Request) {
 			httpError(w, 400, "size %d, plaintext %d", size, len(plain))
 			return
 		}
-		sum := sha256.Sum256(plain)
-		if got := hex.EncodeToString(sum[:]); got != q.Get("digest") {
+		// The real server trusts encrypted digests; the mock recomputes the
+		// keyed digest SHA256(plain || id_key) to catch a client that frames
+		// encrypted but digests plain (or vice versa).
+		h := sha256.New()
+		h.Write(plain)
+		if encrypted {
+			h.Write(m.idKey[:])
+		}
+		if got := hex.EncodeToString(h.Sum(nil)); got != q.Get("digest") {
 			httpError(w, 400, "digest %s, content hashes to %s", q.Get("digest"), got)
 			return
 		}
@@ -371,7 +386,7 @@ func (m *mockPBS) handleH2(w http.ResponseWriter, r *http.Request) {
 
 	case "POST /blob":
 		q := r.URL.Query()
-		payload, err := m.decodeBlob(body)
+		payload, _, err := m.decodeBlob(body)
 		if err != nil {
 			httpError(w, 400, "blob: %v", err)
 			return
@@ -418,22 +433,70 @@ func (m *mockPBS) handleH2(w http.ResponseWriter, r *http.Request) {
 }
 
 // decodeBlob validates blob framing exactly as the server would: magic,
-// CRC32 over the payload, zstd for the compressed magic.
-func (m *mockPBS) decodeBlob(framed []byte) ([]byte, error) {
+// CRC32 over the payload, zstd for the compressed magics. Encrypted blobs
+// (44-byte header, CRC over the ciphertext only) are decrypted with the
+// mock's key — an independent reimplementation of the client's framing, so
+// the two can't share a bug. The second result reports whether the frame was
+// encrypted.
+func (m *mockPBS) decodeBlob(framed []byte) ([]byte, bool, error) {
 	if len(framed) < 12 {
-		return nil, fmt.Errorf("framed blob too short: %d", len(framed))
+		return nil, false, fmt.Errorf("framed blob too short: %d", len(framed))
 	}
+	encrypted := bytes.Equal(framed[:8], []byte{123, 103, 133, 190, 34, 45, 76, 240})
+	encryptedCompr := bytes.Equal(framed[:8], []byte{230, 89, 27, 191, 11, 191, 216, 11})
+	if encrypted || encryptedCompr {
+		if m.cryptKey == nil {
+			return nil, true, fmt.Errorf("encrypted blob but the mock has no key")
+		}
+		if len(framed) < 44 {
+			return nil, true, fmt.Errorf("encrypted frame too short: %d", len(framed))
+		}
+		iv, tag, ct := framed[12:28], framed[28:44], framed[44:]
+		if crc := binary.LittleEndian.Uint32(framed[8:12]); crc != crc32.ChecksumIEEE(ct) {
+			return nil, true, fmt.Errorf("crc mismatch")
+		}
+		block, err := aes.NewCipher(m.cryptKey[:])
+		if err != nil {
+			return nil, true, err
+		}
+		aead, err := cipher.NewGCMWithNonceSize(block, 16)
+		if err != nil {
+			return nil, true, err
+		}
+		sealed := append(append(make([]byte, 0, len(ct)+16), ct...), tag...)
+		payload, err := aead.Open(nil, iv, sealed, nil)
+		if err != nil {
+			return nil, true, fmt.Errorf("gcm open: %v", err)
+		}
+		if encryptedCompr {
+			payload, err = m.zdec.DecodeAll(payload, nil)
+		}
+		return payload, true, err
+	}
+
 	payload := framed[12:]
 	if crc := binary.LittleEndian.Uint32(framed[8:12]); crc != crc32.ChecksumIEEE(payload) {
-		return nil, fmt.Errorf("crc mismatch")
+		return nil, false, fmt.Errorf("crc mismatch")
 	}
 	switch {
 	case bytes.Equal(framed[:8], []byte{66, 171, 56, 7, 190, 131, 112, 161}):
-		return payload, nil
+		return payload, false, nil
 	case bytes.Equal(framed[:8], []byte{49, 185, 88, 66, 111, 182, 163, 127}):
-		return m.zdec.DecodeAll(payload, nil)
+		payload, err := m.zdec.DecodeAll(payload, nil)
+		return payload, false, err
 	}
-	return nil, fmt.Errorf("unknown blob magic %x", framed[:8])
+	return nil, false, fmt.Errorf("unknown blob magic %x", framed[:8])
+}
+
+// setCryptKey arms the mock's encrypted-upload verification, deriving the
+// digest-namespace key independently of the client implementation.
+func (m *mockPBS) setCryptKey(key [32]byte) {
+	m.cryptKey = &key
+	idKey, err := pbkdf2.Key(sha256.New, string(key[:]), []byte("_id_key"), 10, 32)
+	if err != nil {
+		m.t.Fatalf("mock id key: %v", err)
+	}
+	copy(m.idKey[:], idKey)
 }
 
 // makeDidx builds a synthetic dynamic index file for previous-backup tests.

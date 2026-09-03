@@ -24,7 +24,8 @@ const (
 // ticket. Safe for concurrent use.
 type Client struct {
 	cfg      Config
-	addr     string // host:port
+	crypt    *cryptState // nil when Config.Crypt is nil
+	addr     string      // host:port
 	tlsConf  *tls.Config
 	restHTTP *http.Client // HTTP/1.1 client for the regular API (ticket login)
 
@@ -49,6 +50,14 @@ func NewClient(cfg Config) (*Client, error) {
 	if cfg.ChunkSizeAvg != 0 && cfg.ChunkSizeAvg&(cfg.ChunkSizeAvg-1) != 0 {
 		return nil, fmt.Errorf("pbs: ChunkSizeAvg %d is not a power of two", cfg.ChunkSizeAvg)
 	}
+	var crypt *cryptState
+	if cfg.Crypt != nil {
+		var err error
+		if crypt, err = newCryptState(cfg.Crypt); err != nil {
+			return nil, err
+		}
+	}
+
 	// With DialSession the address only labels requests on the session
 	// connection (the :authority pseudo-header); BaseURL may be omitted.
 	addr := "localhost:8007"
@@ -58,12 +67,15 @@ func NewClient(cfg Config) (*Client, error) {
 			return nil, err
 		}
 	}
+  
 	tlsConf, err := newTLSConfig(cfg)
 	if err != nil {
 		return nil, err
 	}
+  
 	return &Client{
 		cfg:     cfg,
+		crypt:   crypt,
 		addr:    addr,
 		tlsConf: tlsConf,
 		restHTTP: &http.Client{

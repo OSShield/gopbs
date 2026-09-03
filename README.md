@@ -119,7 +119,7 @@ multi-stream and v2 backups, each with a live progress bar.
   - [x] PCAT generation
   - [x] Synchronous and asynchronous archive generation
   - [x] Compression (zstd, per chunk — as PBS stores data)
-  - [ ] Encryption (AES-256)
+  - [x] Encryption (AES-256-GCM, key-file compatible with `proxmox-backup-client`, signed manifests, sign-only mode, RSA master-key wrapping)
 
 - [x] Backup to PBS and [@tizbac/pmoxs3backuproxy](https://github.com/tizbac/pmoxs3backuproxy) (S3-compatible proxy for PBS)
   - [x] Directories (single or multiple)

@@ -7,6 +7,7 @@ require github.com/osshield/gopbs v0.0.0
 require (
 	github.com/dchest/siphash v1.2.3 // indirect
 	github.com/klauspost/compress v1.19.2 // indirect
+	golang.org/x/crypto v0.55.0 // indirect
 	golang.org/x/net v0.58.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.41.0 // indirect
