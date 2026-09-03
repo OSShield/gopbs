@@ -42,6 +42,8 @@ type emitter struct {
 	src  payloadSource // v1 only; nil in v2 mode
 	warn func(Warning)
 	refs *refReader // v2 only; nil in v1 mode
+	// prelude is the v2 prelude body (exclude patterns); nil emits no record.
+	prelude []byte
 
 	// linkTargets maps archive paths of emitted hardlink-target candidates
 	// (regular files with nlink > 1) to the start of their filename record.
@@ -53,6 +55,11 @@ func (em *emitter) run(root *scan.Node) error {
 	if em.refs != nil {
 		if err := em.w.write(pxar.AppendFormatVersion(em.scratch(), 2)); err != nil {
 			return err
+		}
+		if em.prelude != nil {
+			if err := em.w.write(pxar.AppendPrelude(em.scratch(), em.prelude)); err != nil {
+				return err
+			}
 		}
 	}
 	_, err := em.node(root, "", true)

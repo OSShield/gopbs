@@ -1,10 +1,14 @@
 package scan
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/osshield/gopbs/pxar"
 )
@@ -82,6 +86,30 @@ type Options struct {
 	// SkipQuotaProjIDs disables the per-node quota project id lookup, which
 	// costs one open+ioctl per directory and regular file.
 	SkipQuotaProjIDs bool
+
+	// Exclude lists exclude patterns in proxmox-backup-client syntax (see
+	// Pattern), matched against archive-relative paths; an excluded
+	// directory's subtree is not scanned. Invalid patterns fail NewScanner.
+	// The archive package records these patterns in the archive the way the
+	// official client does (.pxarexclude-cli in v1, the prelude in v2).
+	Exclude []string
+	// PxarExcludeFiles honours .pxarexclude files found in scanned
+	// directories, like the official client: each line is a pattern
+	// (Pattern syntax; '#' comments and blank lines ignored) applying to
+	// that directory's subtree only, with anchored patterns relative to the
+	// directory holding the file. Lines that fail to parse are reported to
+	// OnWarn (with a *PatternError) and ignored; the file itself is
+	// archived. Off by default: a library should not silently obey control
+	// files found inside the data it backs up.
+	PxarExcludeFiles bool
+	// Filter, when set, is consulted for every entry below a root that the
+	// patterns did not exclude; returning false omits the entry and its
+	// subtree. It sees the on-disk path, the archive-relative path and the
+	// entry's lstat data. Unlike Exclude it is never recorded in the archive.
+	Filter func(path, archivePath string, st Stat) bool
+	// OnExclude, when set, receives every entry omitted by Exclude, a
+	// .pxarexclude file or Filter; nil discards them.
+	OnExclude func(path, archivePath string)
 }
 
 type devino struct{ dev, ino uint64 }
@@ -93,6 +121,11 @@ type Scanner struct {
 	opts      Options
 	r         MetadataReader
 	hardlinks map[devino]string // (dev, ino) -> archive path of first occurrence
+
+	// patterns is the active exclude list: Options.Exclude first, then the
+	// .pxarexclude patterns of the directories currently being descended
+	// (pushed on entry, popped on exit).
+	patterns PatternList
 }
 
 // NewScanner returns a Scanner for the given options. It fails on platforms
@@ -105,7 +138,11 @@ func NewScanner(opts Options) (*Scanner, error) {
 			return nil, err
 		}
 	}
-	return &Scanner{opts: opts, r: r, hardlinks: make(map[devino]string)}, nil
+	patterns, err := ParsePatterns(opts.Exclude)
+	if err != nil {
+		return nil, err
+	}
+	return &Scanner{opts: opts, r: r, hardlinks: make(map[devino]string), patterns: patterns}, nil
 }
 
 // ScanDirectory scans the tree rooted at path. archivePath is the node's
@@ -151,6 +188,18 @@ func (s *Scanner) scanNode(abs, name, archivePath string, st Stat) (*Node, error
 		if err := s.readExtras(n, true); err != nil {
 			return nil, err
 		}
+		// Patterns from this directory's .pxarexclude apply to its subtree
+		// only: pop them when the directory is done (on every return path).
+		mark := len(s.patterns)
+		defer func() { s.patterns = s.patterns[:mark] }()
+		if s.opts.PxarExcludeFiles {
+			if err := s.readPxarExclude(abs, archivePath); err != nil {
+				if !s.opts.SkipOnError {
+					return nil, err
+				}
+				s.warn(filepath.Join(abs, pxarExcludeName), err)
+			}
+		}
 		names, err := s.r.ReadDirNames(abs)
 		if err != nil {
 			return nil, fmt.Errorf("scan %s: %w", abs, err)
@@ -164,6 +213,9 @@ func (s *Scanner) scanNode(abs, name, archivePath string, st Stat) (*Node, error
 					continue
 				}
 				return nil, err
+			}
+			if child == nil {
+				continue // excluded
 			}
 			n.Children = append(n.Children, child)
 		}
@@ -214,6 +266,8 @@ func (s *Scanner) scanNode(abs, name, archivePath string, st Stat) (*Node, error
 	return nil, fmt.Errorf("scan %s: unsupported file type %o", abs, st.Mode&ModeTypeMask)
 }
 
+// scanChild scans one directory entry; it returns (nil, nil) for an entry
+// the exclude patterns or the Filter leave out.
 func (s *Scanner) scanChild(abs, name, archivePath string) (*Node, error) {
 	if err := pxar.ValidateFilename(name); err != nil {
 		return nil, fmt.Errorf("scan %s: %w", abs, err)
@@ -222,7 +276,98 @@ func (s *Scanner) scanChild(abs, name, archivePath string) (*Node, error) {
 	if err != nil {
 		return nil, fmt.Errorf("scan %s: %w", abs, err)
 	}
+	if s.excluded(abs, archivePath, st) {
+		return nil, nil
+	}
 	return s.scanNode(abs, name, archivePath, st)
+}
+
+// excluded applies the active patterns (last match wins) and then the
+// Filter, which can veto even a pattern re-include. Roots never get here.
+func (s *Scanner) excluded(abs, archivePath string, st Stat) bool {
+	isDir := st.Mode&ModeTypeMask == ModeDir
+	if mt, ok := s.patterns.Match(archivePath, isDir); ok && mt == MatchExclude {
+		s.onExclude(abs, archivePath)
+		return true
+	}
+	if s.opts.Filter != nil && !s.opts.Filter(abs, archivePath, st) {
+		s.onExclude(abs, archivePath)
+		return true
+	}
+	return false
+}
+
+func (s *Scanner) onExclude(abs, archivePath string) {
+	if s.opts.OnExclude != nil {
+		s.opts.OnExclude(abs, archivePath)
+	}
+}
+
+const (
+	pxarExcludeName    = ".pxarexclude"
+	maxPxarExcludeSize = 16 << 20
+)
+
+// readPxarExclude pushes the patterns of dirAbs/.pxarexclude, if present,
+// onto the active list. Anchored lines ("/x", "!/x") are anchored at the
+// directory holding the file; other lines apply at any depth below it.
+// Unparsable lines are warned about and skipped; read errors are returned.
+func (s *Scanner) readPxarExclude(dirAbs, dirArchivePath string) error {
+	path := filepath.Join(dirAbs, pxarExcludeName)
+	st, err := s.r.Lstat(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("scan %s: %w", path, err)
+	}
+	if st.Mode&ModeTypeMask != ModeRegular {
+		return nil // only regular files are pattern lists (a fifo would block)
+	}
+	if st.Size > maxPxarExcludeSize {
+		return fmt.Errorf("scan %s: %d bytes exceeds the %d byte limit", path, st.Size, maxPxarExcludeSize)
+	}
+	data, err := s.r.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil // removed between lstat and read
+		}
+		return fmt.Errorf("scan %s: %w", path, err)
+	}
+	for _, line := range bytes.Split(data, []byte{'\n'}) {
+		line = bytes.Trim(line, " \t\r\v\f")
+		if len(line) == 0 || line[0] == '#' {
+			continue
+		}
+		p, err := parseExcludeLine(string(line), dirArchivePath)
+		if err != nil {
+			s.warn(path, err)
+			continue
+		}
+		s.patterns = append(s.patterns, p)
+	}
+	return nil
+}
+
+// parseExcludeLine parses one .pxarexclude line found in the directory at
+// dirArchivePath, prefixing anchored patterns with that directory.
+func parseExcludeLine(line, dirArchivePath string) (Pattern, error) {
+	text := line
+	include := strings.HasPrefix(text, "!")
+	if include {
+		text = text[1:]
+	}
+	if strings.HasPrefix(text, "/") && dirArchivePath != "" {
+		text = "/" + dirArchivePath + text
+	}
+	if include {
+		text = "!" + text
+	}
+	p, err := ParsePattern(text)
+	if err != nil {
+		return Pattern{}, &PatternError{Pattern: line, Err: errors.Unwrap(err)}
+	}
+	return p, nil
 }
 
 // readExtras fills xattrs and ACLs (all kinds it is called for), plus fcaps

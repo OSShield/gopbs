@@ -1,6 +1,7 @@
 package archive
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -28,6 +29,10 @@ const (
 	// WarnTorn: a file's size or mtime changed while its content was being
 	// read; the archived bytes may interleave old and new content.
 	WarnTorn
+	// WarnBadPattern: a .pxarexclude line failed to parse and was ignored
+	// (scan.Options.PxarExcludeFiles). Path is the .pxarexclude file, Err a
+	// *scan.PatternError.
+	WarnBadPattern
 )
 
 // Warning is a non-fatal event surfaced during generation.
@@ -53,10 +58,24 @@ type Options struct {
 	// OnWarn receives non-fatal events; nil discards them.
 	OnWarn func(Warning)
 	// Scan carries scanner policy (SkipOnError, custom reader, quota
-	// lookups). Its OnWarn field is ignored; scan warnings arrive at OnWarn
-	// above as WarnSkipped.
+	// lookups) and the exclusion rules: Scan.Exclude patterns are recorded
+	// in the archive the way proxmox-backup-client records its --exclude
+	// options (a .pxarexclude-cli file emitted last in the v1 root, the v2
+	// prelude record), Scan.PxarExcludeFiles honours .pxarexclude files, and
+	// Scan.Filter is a free-form veto that leaves no trace in the archive.
+	// The .pxarexclude-cli file is a 0600 regular file owned by the
+	// process's real uid/gid with mtime 0, exactly as upstream writes it.
+	// Its OnWarn field is ignored; scan warnings arrive at OnWarn above as
+	// WarnSkipped (or WarnBadPattern for unparsable .pxarexclude lines).
 	Scan scan.Options
 }
+
+// pxarExcludeCLIName is the name of the synthetic root file carrying the
+// exclude patterns in v1 archives. The official client drops any real root
+// entry of that name, patterns or not; so does gopbs (with a warning).
+const pxarExcludeCLIName = ".pxarexclude-cli"
+
+var errReservedName = errors.New("archive: " + pxarExcludeCLIName + " is reserved for the exclude pattern list")
 
 type rootKind int
 
@@ -80,6 +99,9 @@ type Archive struct {
 	opts    Options
 	adds    []addition
 	streams []*scan.Node
+	// cliPatterns is the Options.Scan.Exclude list in .pxarexclude-cli line
+	// form; nil when there are no patterns.
+	cliPatterns []byte
 }
 
 // New returns an empty Archive.
@@ -90,7 +112,15 @@ func New(opts Options) (*Archive, error) {
 	if opts.Buffer < 0 {
 		return nil, fmt.Errorf("archive: negative buffer budget %d", opts.Buffer)
 	}
-	return &Archive{opts: opts}, nil
+	patterns, err := scan.ParsePatterns(opts.Scan.Exclude)
+	if err != nil {
+		return nil, fmt.Errorf("archive: %w", err)
+	}
+	a := &Archive{opts: opts}
+	if len(patterns) > 0 {
+		a.cliPatterns = []byte(patterns.String())
+	}
+	return a, nil
 }
 
 // AddDirectory queues a directory tree. A single queued directory becomes the
@@ -185,15 +215,69 @@ func (a *Archive) AddStream(name string, size int64, r io.Reader) error {
 	return nil
 }
 
-// buildTree scans the queued roots into a single node tree.
-func (a *Archive) buildTree() (*scan.Node, error) {
+// buildTree scans the queued roots into a single node tree. v2 selects the
+// split-format layout, which records exclude patterns in the prelude rather
+// than as a .pxarexclude-cli root file.
+func (a *Archive) buildTree(v2 bool) (*scan.Node, error) {
+	root, err := a.scanRoots()
+	if err != nil {
+		return nil, err
+	}
+	root.Children = a.dropReserved(root.Children)
+	if a.cliPatterns != nil && !v2 {
+		// After the sorted children, so it is emitted last — upstream
+		// appends it to the root listing after sorting.
+		root.Children = append(root.Children, cliPatternNode(a.cliPatterns))
+	}
+	return root, nil
+}
+
+// dropReserved removes root children named .pxarexclude-cli, warning for
+// each; the name belongs to the recorded pattern list.
+func (a *Archive) dropReserved(children []*scan.Node) []*scan.Node {
+	kept := children[:0]
+	for _, c := range children {
+		if c.Name == pxarExcludeCLIName {
+			a.warn(Warning{Kind: WarnSkipped, Path: c.Path, Err: errReservedName})
+			continue
+		}
+		kept = append(kept, c)
+	}
+	return kept
+}
+
+// cliPatternNode builds the synthetic .pxarexclude-cli file exactly as the
+// official client does: a regular file, mode 0600, owned by the process's
+// real uid/gid, mtime 0.
+func cliPatternNode(content []byte) *scan.Node {
+	n, err := scan.StreamNode(pxarExcludeCLIName, int64(len(content)), bytes.NewReader(content))
+	if err != nil {
+		panic(err) // the name is a valid constant
+	}
+	n.Stat = scan.Stat{
+		Mode:  scan.ModeRegular | 0o600,
+		UID:   uint32(os.Getuid()),
+		GID:   uint32(os.Getgid()),
+		Size:  int64(len(content)),
+		Nlink: 1,
+	}
+	return n
+}
+
+// scanRoots scans the queued roots into a single node tree.
+func (a *Archive) scanRoots() (*scan.Node, error) {
 	if len(a.adds) == 0 && len(a.streams) == 0 {
 		return nil, errors.New("archive: nothing added")
 	}
 
 	scanOpts := a.opts.Scan
 	scanOpts.OnWarn = func(w scan.Warning) {
-		a.warn(Warning{Kind: WarnSkipped, Path: w.Path, Err: w.Err})
+		kind := WarnSkipped
+		var pe *scan.PatternError
+		if errors.As(w.Err, &pe) {
+			kind = WarnBadPattern
+		}
+		a.warn(Warning{Kind: kind, Path: w.Path, Err: w.Err})
 	}
 	s, err := scan.NewScanner(scanOpts)
 	if err != nil {
@@ -247,7 +331,7 @@ func (a *Archive) buildTree() (*scan.Node, error) {
 // Generation runs concurrently with consumption; errors surface from Read,
 // and Close cancels generation.
 func (a *Archive) GenerateV1(ctx context.Context) (io.ReadCloser, error) {
-	root, err := a.buildTree()
+	root, err := a.buildTree(false)
 	if err != nil {
 		return nil, err
 	}
@@ -288,7 +372,7 @@ func (a *Archive) GenerateV1(ctx context.Context) (io.ReadCloser, error) {
 // by scan-time metadata. An estimate: payload sizes are re-bound at emission,
 // so files changed after the estimate shift the real total.
 func (a *Archive) EstimatedSizeV1() (int64, error) {
-	root, err := a.buildTree()
+	root, err := a.buildTree(false)
 	if err != nil {
 		return 0, err
 	}
@@ -303,7 +387,7 @@ func (a *Archive) EstimatedSizeV1() (int64, error) {
 // stall) and close both. Errors surface from Read; closing a stream aborts
 // that stream's generation.
 func (a *Archive) GenerateV2(ctx context.Context) (meta, payload io.ReadCloser, err error) {
-	root, err := a.buildTree()
+	root, err := a.buildTree(true)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -334,9 +418,10 @@ func (a *Archive) GenerateV2(ctx context.Context) (meta, payload io.ReadCloser, 
 	go func() {
 		defer wg.Done()
 		em := &emitter{
-			w:    &countWriter{ctx: genCtx, w: metaW},
-			warn: a.warn,
-			refs: newRefReader(ledger),
+			w:       &countWriter{ctx: genCtx, w: metaW},
+			warn:    a.warn,
+			refs:    newRefReader(ledger),
+			prelude: a.prelude(),
 		}
 		metaW.CloseWithError(em.run(root))
 	}()
@@ -370,12 +455,24 @@ func (a *Archive) GenerateV2(ctx context.Context) (meta, payload io.ReadCloser, 
 // EstimatedSizeV2 scans the queued roots and returns the sizes of the two v2
 // streams implied by scan-time metadata. Estimates, like EstimatedSizeV1.
 func (a *Archive) EstimatedSizeV2() (meta, payload int64, err error) {
-	root, err := a.buildTree()
+	root, err := a.buildTree(true)
 	if err != nil {
 		return 0, 0, err
 	}
 	m, p := estimateV2(root, true)
+	if prelude := a.prelude(); prelude != nil {
+		m += pxar.SizePrelude(prelude)
+	}
 	return int64(m), int64(p), nil
+}
+
+// prelude returns the v2 prelude body: the exclude patterns wrapped the
+// way the official client serializes them, or nil when there are none.
+func (a *Archive) prelude() []byte {
+	if a.cliPatterns == nil {
+		return nil
+	}
+	return preludeJSON(a.cliPatterns)
 }
 
 func (a *Archive) warn(w Warning) {
