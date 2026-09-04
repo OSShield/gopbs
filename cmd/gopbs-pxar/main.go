@@ -3,6 +3,9 @@
 //
 //	gopbs-pxar <output.pxar> <source-dir>                        # v1
 //	gopbs-pxar -payload out.ppxar <output.mpxar> <source-dir>    # v2 split
+//
+// -exclude (repeatable) takes patterns in proxmox-backup-client syntax and
+// -pxarexclude honours .pxarexclude files, mirroring `pxar create --exclude`.
 package main
 
 import (
@@ -14,21 +17,28 @@ import (
 	"sync"
 
 	"github.com/osshield/gopbs/archive"
+	"github.com/osshield/gopbs/scan"
 )
 
 func main() {
 	catalogOut := flag.String("catalog", "", "also write a .pcat1 catalog to this path (v1 only)")
 	payloadOut := flag.String("payload", "", "write a v2 split archive: metadata to <output>, payloads to this path")
+	var scanOpts scan.Options
+	flag.Func("exclude", "exclude pattern (proxmox-backup-client syntax; repeatable)", func(p string) error {
+		scanOpts.Exclude = append(scanOpts.Exclude, p)
+		return nil
+	})
+	flag.BoolVar(&scanOpts.PxarExcludeFiles, "pxarexclude", false, "honour .pxarexclude files in the source tree")
 	flag.Parse()
 	if flag.NArg() != 2 {
-		fmt.Fprintf(os.Stderr, "usage: %s [-catalog out.pcat1] [-payload out.ppxar] <output.pxar> <source-dir>\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "usage: %s [-catalog out.pcat1] [-payload out.ppxar] [-exclude pattern]... [-pxarexclude] <output.pxar> <source-dir>\n", os.Args[0])
 		os.Exit(2)
 	}
 	var err error
 	if *payloadOut != "" {
-		err = runV2(flag.Arg(0), *payloadOut, flag.Arg(1))
+		err = runV2(flag.Arg(0), *payloadOut, flag.Arg(1), scanOpts)
 	} else {
-		err = run(flag.Arg(0), flag.Arg(1), *catalogOut)
+		err = run(flag.Arg(0), flag.Arg(1), *catalogOut, scanOpts)
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "gopbs-pxar:", err)
@@ -36,8 +46,9 @@ func main() {
 	}
 }
 
-func run(out, src, catalogOut string) error {
+func run(out, src, catalogOut string, scanOpts scan.Options) error {
 	a, err := archive.New(archive.Options{
+		Scan: scanOpts,
 		OnWarn: func(w archive.Warning) {
 			fmt.Fprintf(os.Stderr, "warning: kind=%d path=%s err=%v bound=%d actual=%d\n",
 				w.Kind, w.Path, w.Err, w.Bound, w.Actual)
@@ -96,8 +107,9 @@ func run(out, src, catalogOut string) error {
 
 // runV2 writes a split archive. The two streams must be consumed
 // concurrently — metadata emission awaits payload dispatch progress.
-func runV2(metaOut, payloadOut, src string) error {
+func runV2(metaOut, payloadOut, src string, scanOpts scan.Options) error {
 	a, err := archive.New(archive.Options{
+		Scan: scanOpts,
 		OnWarn: func(w archive.Warning) {
 			fmt.Fprintf(os.Stderr, "warning: kind=%d path=%s err=%v bound=%d actual=%d\n",
 				w.Kind, w.Path, w.Err, w.Bound, w.Actual)

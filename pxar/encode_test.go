@@ -59,6 +59,19 @@ func TestAppendFilename(t *testing.T) {
 	}
 }
 
+func TestAppendPrelude(t *testing.T) {
+	body := []byte(`{"exclude-patterns":"*.tmp\n"}`)
+	want := golden(le64(pxar.TypePrelude), le64(16+uint64(len(body))), body)
+	got := pxar.AppendPrelude(nil, body)
+	checkRecord(t, "prelude", got, want)
+	if pxar.SizePrelude(body) != uint64(len(got)) {
+		t.Errorf("SizePrelude = %d, want %d", pxar.SizePrelude(body), len(got))
+	}
+	if empty := pxar.AppendPrelude(nil, nil); len(empty) != pxar.HeaderSize {
+		t.Errorf("empty prelude encodes to %d bytes", len(empty))
+	}
+}
+
 func TestValidateFilename(t *testing.T) {
 	for _, ok := range []string{"a", "with space", "üñïçödé", "trailing.dot."} {
 		if err := pxar.ValidateFilename(ok); err != nil {
