@@ -45,6 +45,12 @@ type BackupOptions struct {
 	// the backup client-side (or sign its manifest); see pbs.CryptConfig.
 	Client pbs.Config
 	// Archive configures generation (name, workers, buffer, scan policy).
+	// Exclusions live in Archive.Scan: Exclude patterns in
+	// proxmox-backup-client syntax (recorded in the archive like the
+	// official client's --exclude: a .pxarexclude-cli root file in v1, the
+	// prelude in v2), PxarExcludeFiles to honour .pxarexclude files in the
+	// tree, and Filter for arbitrary caller logic that leaves no trace in
+	// the archive. Invalid patterns fail before any connection is made.
 	// Its OnWarn is honored in addition to warnings being collected into
 	// the result.
 	Archive archive.Options

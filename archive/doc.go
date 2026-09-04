@@ -9,5 +9,8 @@
 // output stream stays byte-identical to synchronous mode.
 //
 // Supports single-stream v1 output (plus a .pcat1 catalog) and split v2
-// output (.mpxar metadata + .ppxar payload).
+// output (.mpxar metadata + .ppxar payload). Exclude patterns given via
+// Options.Scan.Exclude are recorded in the archive the way the official
+// client records --exclude (a .pxarexclude-cli root file in v1, the prelude
+// record in v2).
 package archive

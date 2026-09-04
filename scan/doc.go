@@ -7,4 +7,8 @@
 // here — they are streamed later by the archive emitter. Platform specifics
 // live behind the MetadataReader interface; the full implementation
 // targets Linux via golang.org/x/sys/unix.
+//
+// Entries can be left out with exclude patterns in proxmox-backup-client
+// syntax (Options.Exclude, Pattern), per-directory .pxarexclude files
+// (Options.PxarExcludeFiles) and a free-form Options.Filter callback.
 package scan

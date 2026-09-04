@@ -66,7 +66,10 @@ result, err := gopbs.Backup(context.Background(), gopbs.BackupOptions{
     },
     Archive: archive.Options{
         Name: "root",
-        Scan: scan.Options{SkipOnError: true},
+        Scan: scan.Options{
+            SkipOnError: true,
+            Exclude:     []string{"*.tmp", "!keep.tmp", "cache/"}, // proxmox-backup-client --exclude syntax
+        },
     },
     Ref:   pbs.SnapshotRef{Type: "host", ID: "myhost"},
     Paths: []string{"/etc", "/srv"},
@@ -78,6 +81,15 @@ result, err := gopbs.Backup(context.Background(), gopbs.BackupOptions{
 by `io.Reader`s) are placed under a virtual root named after the archive. Set
 `OnProgress` for live per-chunk progress, and read non-fatal events (skipped entries,
 files that changed mid-read) from `result.Warnings`.
+
+**Excluding entries.** `Scan.Exclude` takes patterns in the official client's
+`--exclude` syntax: a leading `/` anchors to the archive root, a trailing `/` matches
+directories only, `!` re-includes, `**` spans directory levels, and the last matching
+pattern wins. They are recorded in the archive exactly as `proxmox-backup-client` does
+(a `.pxarexclude-cli` file in the v1 root, the prelude record in v2). Set
+`Scan.PxarExcludeFiles` to honour `.pxarexclude` files found in the tree, and
+`Scan.Filter` for arbitrary logic (size, age, device boundaries) that leaves no trace
+in the archive. See [docs/api.md](docs/api.md#excluding-entries).
 
 Set `Format: gopbs.FormatV2` for split archives: metadata (`.mpxar`) and payload
 (`.ppxar`) upload as two concurrent indexes, so metadata-only changes (touched mtimes,
@@ -120,6 +132,7 @@ multi-stream and v2 backups, each with a live progress bar.
   - [x] Synchronous and asynchronous archive generation
   - [x] Compression (zstd, per chunk — as PBS stores data)
   - [x] Encryption (AES-256-GCM, key-file compatible with `proxmox-backup-client`, signed manifests, sign-only mode, RSA master-key wrapping)
+  - [x] Exclusions (`--exclude` pattern syntax of `proxmox-backup-client`, `.pxarexclude` files, custom filter callback; recorded in the archive like the official client, byte-identical output)
 
 - [x] Backup to PBS and [@tizbac/pmoxs3backuproxy](https://github.com/tizbac/pmoxs3backuproxy) (S3-compatible proxy for PBS)
   - [x] Directories (single or multiple)
@@ -267,6 +280,21 @@ func main() {
 				// This can improve performance, and saves one ioctl call per directory and file,
 				// but it means that the backup will not be able to restore quota project IDs.
 				// SkipQuotaProjIDs: false,
+
+				// Exclude patterns in proxmox-backup-client --exclude syntax, matched against
+				// archive-relative paths; last match wins. Recorded in the archive like the
+				// official client does (.pxarexclude-cli in v1, the prelude in v2).
+				Exclude: []string{"*.tmp", "!keep.tmp", "cache/", "/var/cache", "**/node_modules"},
+
+				// Honour .pxarexclude files found in the scanned directories (off by default).
+				// PxarExcludeFiles: true,
+
+				// Arbitrary exclusion logic; return false to omit the entry and its subtree.
+				// Not recorded in the archive.
+				// Filter: func(path, archivePath string, st scan.Stat) bool { return st.Size < 1<<30 },
+
+				// Called for every entry left out by Exclude, .pxarexclude or Filter.
+				// OnExclude: func(path, archivePath string) { log.Println("excluded", path) },
 			},
 
 			// This function is called for each warning encountered during archive generation.

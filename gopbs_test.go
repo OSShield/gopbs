@@ -29,6 +29,11 @@ func TestBackupOptionValidation(t *testing.T) {
 			"nothing to back up",
 		},
 		{
+			"invalid exclude pattern",
+			func(o *gopbs.BackupOptions) { o.Archive.Scan.Exclude = []string{"[abc"} },
+			"invalid exclude pattern",
+		},
+		{
 			"empty blob name",
 			func(o *gopbs.BackupOptions) { o.Blobs = []gopbs.Blob{{Name: ""}} },
 			"empty name",

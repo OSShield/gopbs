@@ -34,10 +34,11 @@ const (
 )
 
 const (
-	sourceDir  = "./.test-source"
-	pxarDir    = "./.test-pxar"
-	restoreDir = "./.test-restore"
-	keysDir    = "./.test-keys"
+	sourceDir     = "./.test-source"
+	sourceExclDir = "./.test-source-exclude" // deterministic exclude fixture (exclude_test.go)
+	pxarDir       = "./.test-pxar"
+	restoreDir    = "./.test-restore"
+	keysDir       = "./.test-keys"
 )
 
 func TestMain(m *testing.M) {
@@ -45,6 +46,7 @@ func TestMain(m *testing.M) {
 
 	cleanAll()
 	makeTree()
+	makeExcludeTree()
 
 	// One build up front, then one one-off container per archiver. The CLI
 	// (unlike the compose Go SDK this harness used before) handles one-off
@@ -52,7 +54,10 @@ func TestMain(m *testing.M) {
 	if err := compose("build"); err != nil {
 		log.Fatal(err)
 	}
-	for _, svc := range []string{"pbs", "tizbac", "gopbs", "pbssplit", "gopbssplit"} {
+	for _, svc := range []string{
+		"pbs", "tizbac", "gopbs", "pbssplit", "gopbssplit",
+		"pbsexclude", "gopbsexclude", "pbssplitexclude", "gopbssplitexclude",
+	} {
 		if err := compose("run", "--rm", "--remove-orphans", svc); err != nil {
 			log.Fatalf("creating %s archive: %v", svc, err)
 		}
@@ -182,6 +187,7 @@ func cleanAll() {
 	}
 	notGitkeep := func(name string) bool { return name == ".gitkeep" }
 	clean(sourceDir, notGitkeep)
+	clean(sourceExclDir, notGitkeep)
 	clean(pxarDir, notGitkeep)
 	clean(restoreDir, notGitkeep)
 	clean(keysDir, notGitkeep)

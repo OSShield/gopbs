@@ -40,6 +40,7 @@ tests/.test-pxar/*
 !tests/.test-pxar/.gitkeep
 tests/.test-restore/*
 !tests/.test-restore/.gitkeep
+tests/.test-source-exclude/
 
 __debug*
 

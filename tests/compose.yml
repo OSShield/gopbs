@@ -70,6 +70,94 @@ services:
       - ./.test-source:/source:ro
       - ./.test-pxar:/pxar:rw
 
+  # Exclusion fixture (.test-source-exclude, built by exclude_test.go): the
+  # same patterns given to the official CLI and to gopbs, which also honours
+  # the fixture's .pxarexclude files like the CLI always does. Outputs are
+  # byte-compared (v1 and split) and restored for a tree comparison.
+  pbsexclude:
+    user: 1000:1000
+    image: ghcr.io/osshield/gopbs-tests-pbs:latest
+    build:
+      context: .
+      dockerfile: pbs.Dockerfile
+    command:
+      - "create"
+      - "/pxar/pbs-excl.pxar"
+      - "/source"
+      - "--exclude=*.tmp"
+      - "--exclude=!keep.tmp"
+      - "--exclude=cache/"
+      - "--exclude=/anchored"
+      - "--exclude=**/deep/*"
+      - "--exclude=fol*_name/"
+    volumes:
+      - ./.test-source-exclude:/source:ro
+      - ./.test-pxar:/pxar:rw
+
+  gopbsexclude:
+    user: 1000:1000
+    build:
+      context: ..
+      dockerfile: tests/gopbs.Dockerfile
+    command:
+      - -catalog
+      - /pxar/gopbs-excl.pcat1
+      - -exclude=*.tmp
+      - -exclude=!keep.tmp
+      - -exclude=cache/
+      - -exclude=/anchored
+      - -exclude=**/deep/*
+      - -exclude=fol*_name/
+      - -pxarexclude
+      - /pxar/gopbs-excl.pxar
+      - /source
+    volumes:
+      - ./.test-source-exclude:/source:ro
+      - ./.test-pxar:/pxar:rw
+
+  pbssplitexclude:
+    user: 1000:1000
+    image: ghcr.io/osshield/gopbs-tests-pbs:latest
+    build:
+      context: .
+      dockerfile: pbs.Dockerfile
+    command:
+      - "create"
+      - "/pxar/pbs-excl.mpxar"
+      - "/source"
+      - "--payload-output"
+      - "/pxar/pbs-excl.ppxar"
+      - "--exclude=*.tmp"
+      - "--exclude=!keep.tmp"
+      - "--exclude=cache/"
+      - "--exclude=/anchored"
+      - "--exclude=**/deep/*"
+      - "--exclude=fol*_name/"
+    volumes:
+      - ./.test-source-exclude:/source:ro
+      - ./.test-pxar:/pxar:rw
+
+  gopbssplitexclude:
+    user: 1000:1000
+    build:
+      context: ..
+      dockerfile: tests/gopbs.Dockerfile
+    command:
+      - -payload
+      - /pxar/gopbs-excl.ppxar
+      - -exclude=*.tmp
+      - -exclude=!keep.tmp
+      - -exclude=cache/
+      - -exclude=/anchored
+      - -exclude=**/deep/*
+      - -exclude=fol*_name/
+      - -pxarexclude
+      - /pxar/gopbs-excl.mpxar
+      - /source
+    volumes:
+      - ./.test-source-exclude:/source:ro
+      - ./.test-pxar:/pxar:rw
+
   restore:
     user: 0:0
     image: ghcr.io/osshield/gopbs-tests-pbs:latest
@@ -79,10 +167,14 @@ services:
       - "-ec"
       - |
         rm -rf /restore/pbs /restore/tizbac /restore/gopbs /restore/gopbs-split
+        rm -rf /restore/pbs-excl /restore/gopbs-excl /restore/gopbs-excl-split
         pxar extract /pxar/pbs.pxar /restore/pbs
         pxar extract /pxar/tizbac.pxar /restore/tizbac
         pxar extract /pxar/gopbs.pxar /restore/gopbs
         pxar extract --payload-input /pxar/gopbs.ppxar /pxar/gopbs.mpxar /restore/gopbs-split
+        pxar extract /pxar/pbs-excl.pxar /restore/pbs-excl
+        pxar extract /pxar/gopbs-excl.pxar /restore/gopbs-excl
+        pxar extract --payload-input /pxar/gopbs-excl.ppxar /pxar/gopbs-excl.mpxar /restore/gopbs-excl-split
         chmod -R 777 /restore/*
     volumes:
       - ./.test-pxar:/pxar:ro
