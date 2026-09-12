@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/osshield/gopbs/pxar"
+	"github.com/osshield/gopbs/reuse"
 	"github.com/osshield/gopbs/scan"
 )
 
@@ -68,6 +69,17 @@ type Options struct {
 	// Its OnWarn field is ignored; scan warnings arrive at OnWarn above as
 	// WarnSkipped (or WarnBadPattern for unparsable .pxarexclude lines).
 	Scan scan.Options
+
+	// Previous enables metadata change detection for GenerateV2: regular
+	// files whose metadata and size match the previous snapshot are not
+	// read; the payload stream references the previous snapshot's chunks
+	// instead. The payload stream is then framed (see package reuse) and
+	// must be uploaded with pbs.UploadPXARv2, which understands the framing.
+	// nil reads everything.
+	Previous *Previous
+	// PaddingThreshold bounds the share of reused chunk bytes that belong
+	// to files not in the new archive; 0 = DefaultPaddingThreshold.
+	PaddingThreshold float64
 }
 
 // pxarExcludeCLIName is the name of the synthetic root file carrying the
@@ -102,7 +114,13 @@ type Archive struct {
 	// cliPatterns is the Options.Scan.Exclude list in .pxarexclude-cli line
 	// form; nil when there are no patterns.
 	cliPatterns []byte
+
+	reuseStats ReuseStats
 }
+
+// ReuseStats reports the outcome of metadata change detection for the most
+// recent GenerateV2 call (zero values when Options.Previous was nil).
+func (a *Archive) ReuseStats() ReuseStats { return a.reuseStats }
 
 // New returns an empty Archive.
 func New(opts Options) (*Archive, error) {
@@ -400,7 +418,11 @@ func (a *Archive) GenerateV2(ctx context.Context) (meta, payload io.ReadCloser, 
 	genCtx, cancel := context.WithCancel(ctx)
 	ledger := newRefLedger(genCtx.Done())
 
-	payloads := collectPayloads(root, nil)
+	// The plan decides per file whether its content is read or referenced
+	// from the previous snapshot; only read files enter the payload source
+	nodes, paths := collectPayloadPaths(root, "", nil, nil)
+	plan, payloads, stats := planReuse(nodes, paths, a.opts.Previous, a.opts.PaddingThreshold)
+	a.reuseStats = stats
 	var src payloadSource = syncSource{}
 	var async *asyncSource
 	if workers > 1 {
@@ -420,21 +442,28 @@ func (a *Archive) GenerateV2(ctx context.Context) (meta, payload io.ReadCloser, 
 		em := &emitter{
 			w:       &countWriter{ctx: genCtx, w: metaW},
 			warn:    a.warn,
-			refs:    newRefReader(ledger),
+			refs:    newRefReader(ledger, plan),
 			prelude: a.prelude(),
 		}
 		metaW.CloseWithError(em.run(root))
 	}()
 	go func() {
 		defer wg.Done()
+		var payOut io.Writer = payW
+		var inject *reuse.Writer
+		if a.opts.Previous != nil {
+			inject = reuse.NewWriter(payW)
+			payOut = inject
+		}
 		pe := &payloadEmitter{
-			w:       &countWriter{ctx: genCtx, w: payW},
+			w:       &countWriter{ctx: genCtx, w: payOut},
 			src:     src,
 			warn:    a.warn,
 			ledger:  ledger,
 			publish: async == nil,
+			inject:  inject,
 		}
-		err := pe.run(payloads)
+		err := pe.run(plan)
 		if err != nil {
 			// Unblock the metadata emitter: refs it still awaits will never
 			// be bound.

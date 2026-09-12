@@ -237,3 +237,38 @@ client, err := pbs.NewClient(pbs.Config{
 - Everything takes a `context.Context`; cancellation aborts generation and
   uploads promptly, and abandoned generator streams must still be `Close`d
   to release their goroutines.
+
+## Metadata change detection (v2)
+
+A v2 backup can skip reading files whose metadata did not change since the
+previous snapshot, like `proxmox-backup-client --change-detection-mode
+metadata`:
+
+1. Keep the previous snapshot's **metadata stream** (tee the `meta` reader of
+   `GenerateV2` into a file when uploading) and the `Entries` of both
+   `UploadStats` returned by `UploadPXARv2`.
+2. At the next backup, after `StartBackup`, call
+   `sess.PreviousIndex(ctx, "<base>.mpxar.didx")` and compare its digests with
+   the stored metadata entries: equal digests prove the local copy is the
+   server's previous metadata stream. Then fetch
+   `sess.PreviousIndex(ctx, "<base>.ppxar.didx")` — this also registers its
+   chunks as known to the session.
+3. `archive.LoadPrevious(metaCopy, payloadEntries)` indexes the copy;
+   set `archive.Options.Previous` and generate with `GenerateV2`.
+4. Upload with `UploadPXARv2` as usual. The payload stream is now *framed*
+   (package `reuse`): runs of unchanged files are not read, the uploader
+   appends the previous chunks covering them to the new index instead.
+
+A regular file is unchanged when its size and its complete encoded metadata
+(mode, owner, mtime, xattrs, ACLs, fcaps, quota id) equal the previous
+entry's. Consecutive unchanged files form a run; the previous chunks covering
+the run are reused when the boundary chunks carry at most
+`Options.PaddingThreshold` (default 10 %) of bytes belonging to other files —
+otherwise the run is read and chunked again. `Archive.ReuseStats()` (and
+`BackupResult.Reuse`) report files and bytes reused, bytes injected including
+padding, and rejected runs.
+
+Payload references of a reused archive are no longer contiguous (the padding
+inside injected chunks is unreferenced), which every PBS tool tolerates: the
+metadata stream addresses payload records by absolute offset.
+

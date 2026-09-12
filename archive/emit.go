@@ -173,7 +173,13 @@ func (em *emitter) node(n *scan.Node, apath string, isRoot bool) (goodbyeExtra u
 // order: xattrs, ACL users, groups, group-obj, default, default users,
 // default groups, fcaps, quota project id.
 func (em *emitter) metadata(n *scan.Node) error {
-	buf := pxar.AppendEntry(em.scratch(), pxar.Entry{
+	return em.w.write(metadataBytes(em.scratch(), n))
+}
+
+// metadataBytes appends a node's ENTRY record and metadata records to dst.
+// Change detection compares these bytes with the previous snapshot's.
+func metadataBytes(dst []byte, n *scan.Node) []byte {
+	buf := pxar.AppendEntry(dst, pxar.Entry{
 		Mode:       n.Stat.Mode,
 		UID:        n.Stat.UID,
 		GID:        n.Stat.GID,
@@ -209,7 +215,7 @@ func (em *emitter) metadata(n *scan.Node) error {
 	if n.QuotaProjID != 0 {
 		buf = pxar.AppendQuotaProjID(buf, n.QuotaProjID)
 	}
-	return em.w.write(buf)
+	return buf
 }
 
 // scratch hands out the shared metadata rendering buffer, emptied.
