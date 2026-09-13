@@ -126,6 +126,9 @@ type Scanner struct {
 	// .pxarexclude patterns of the directories currently being descended
 	// (pushed on entry, popped on exit).
 	patterns PatternList
+	// followedRoot is a root path that is a symlink to a directory (scanned
+	// through the link; see Follower)
+	followedRoot string
 }
 
 // NewScanner returns a Scanner for the given options. It fails on platforms
@@ -157,6 +160,17 @@ func (s *Scanner) ScanDirectory(path, archivePath string) (*Node, error) {
 	if err != nil {
 		return nil, fmt.Errorf("scan %s: %w", abs, err)
 	}
+	if st.Mode&ModeTypeMask == ModeSymlink {
+		// A root that links to a directory is scanned as that directory. Its own
+		// extras (xattrs, ACLs, quota id) are not read: the l-variant lookups
+		// would describe the link, and no-follow opens fail on it.
+		if f, ok := s.r.(Follower); ok {
+			if target, err := f.Stat(abs); err == nil && target.Mode&ModeTypeMask == ModeDir {
+				st = target
+				s.followedRoot = abs
+			}
+		}
+	}
 	if st.Mode&ModeTypeMask != ModeDir {
 		return nil, fmt.Errorf("scan %s: not a directory", abs)
 	}
@@ -185,8 +199,10 @@ func (s *Scanner) scanNode(abs, name, archivePath string, st Stat) (*Node, error
 	switch st.Mode & ModeTypeMask {
 	case ModeDir:
 		n.Kind = KindDirectory
-		if err := s.readExtras(n, true); err != nil {
-			return nil, err
+		if abs != s.followedRoot {
+			if err := s.readExtras(n, true); err != nil {
+				return nil, err
+			}
 		}
 		// Patterns from this directory's .pxarexclude apply to its subtree
 		// only: pop them when the directory is done (on every return path).

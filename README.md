@@ -155,9 +155,9 @@ multi-stream and v2 backups, each with a live progress bar.
     - [ ] Remote filesystems (via rclone)
     - [ ] Block devices
 
-  - [ ] Windows filesystem
-    - [ ] Plain Filesystem (NTFS, FAT32, exFAT, etc.)
-    - [ ] Snapshot-based (VSS)
+  - [x] Windows filesystem
+    - [x] Plain Filesystem (NTFS, FAT32, exFAT, etc.) — types, sizes, mtimes, hardlinks, symlinks/junctions; no ACLs or alternate streams yet
+    - [ ] Snapshot-based (VSS) — callers point the scanner at a shadow copy (fallbck does)
 
   - [ ] Backup and restore databases
     - [ ] MySQL

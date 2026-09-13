@@ -42,6 +42,25 @@ func (linuxReader) Lstat(path string) (Stat, error) {
 	}, nil
 }
 
+// Stat follows a final symlink (Follower)
+func (linuxReader) Stat(path string) (Stat, error) {
+	var st unix.Stat_t
+	if err := unix.Stat(path, &st); err != nil {
+		return Stat{}, &os.PathError{Op: "stat", Path: path, Err: err}
+	}
+	return Stat{
+		Mode:       uint64(st.Mode),
+		UID:        st.Uid,
+		GID:        st.Gid,
+		MtimeSecs:  st.Mtim.Sec,
+		MtimeNanos: uint32(st.Mtim.Nsec),
+		Size:       st.Size,
+		Nlink:      uint64(st.Nlink),
+		Dev:        uint64(st.Dev),
+		Ino:        st.Ino,
+	}, nil
+}
+
 func (linuxReader) ReadDirNames(path string) ([]string, error) {
 	entries, err := os.ReadDir(path) // sorted by filename byte order
 	if err != nil {

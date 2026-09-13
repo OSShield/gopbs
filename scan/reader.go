@@ -61,3 +61,12 @@ type MetadataReader interface {
 	// error satisfying errors.Is(err, fs.ErrNotExist).
 	ReadFile(path string) ([]byte, error)
 }
+
+// Follower is implemented by readers that can stat through a final symlink.
+// The scanner uses it for a root that is itself a symbolic link (or junction)
+// to a directory — a Volume Shadow Copy exposed through a link, for example —
+// so the tree behind the link is archived while every path below is still
+// opened through the link, which the OS follows transparently.
+type Follower interface {
+	Stat(path string) (Stat, error)
+}
