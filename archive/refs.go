@@ -77,27 +77,40 @@ func (l *refLedger) get(i int) (int64, error) {
 }
 
 // refReader hands the metadata emitter one PAYLOAD_REF per regular file in
-// plan order, deriving payload-stream offsets from the bound sizes: payload i
-// starts right after the start marker and the i preceding payload records.
+// plan order. Read files derive their payload-stream offset from the bound
+// sizes (the record starts where the previous one ended); reused files take
+// their offset inside the span of previous chunks injected for their run.
 type refReader struct {
 	ledger *refLedger
+	plan   []payloadPlan
 	seq    int
-	offset uint64 // next payload record's header position in the payload stream
+	offset uint64 // next payload position in the payload stream
 }
 
-func newRefReader(l *refLedger) *refReader {
-	return &refReader{ledger: l, offset: pxar.MarkerSize}
+func newRefReader(l *refLedger, plan []payloadPlan) *refReader {
+	return &refReader{ledger: l, plan: plan, offset: pxar.MarkerSize}
 }
 
-// next returns the payload-stream offset and bound size for the next regular
-// file, blocking until its size is bound.
+// next returns the payload-stream offset and size for the next regular
+// file, blocking until a read file's size is bound.
 func (r *refReader) next() (offset, size uint64, err error) {
-	s, err := r.ledger.get(r.seq)
+	if r.seq >= len(r.plan) {
+		return 0, 0, fmt.Errorf("archive: internal: more files emitted than planned")
+	}
+	p := r.plan[r.seq]
+	r.seq++
+	if p.reuse {
+		offset = r.offset + p.rel
+		if p.runEnd {
+			r.offset += p.runTotal
+		}
+		return offset, p.size, nil
+	}
+	s, err := r.ledger.get(p.readSeq)
 	if err != nil {
 		return 0, 0, err
 	}
 	offset = r.offset
-	r.seq++
 	r.offset += pxar.HeaderSize + uint64(s)
 	return offset, uint64(s), nil
 }

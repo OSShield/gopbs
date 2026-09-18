@@ -227,6 +227,16 @@ the same archive name users type for v1. v1 snapshots include the catalog so
 the PBS UI can browse them; v2 snapshots must not include one (the UI reads
 the metadata stream).
 
+### Reused chunks
+
+With metadata change detection the generator hands the uploader a framed
+payload stream (package `reuse`): data frames are chunked as usual, an
+injection frame forces a chunk boundary and appends the listed previous
+chunks to the index by digest (`PUT /dynamic_index`) without uploading them.
+The server accepts them because `GET /previous` on the payload index has
+registered them as known to the session; a digest it did not register fails
+the upload.
+
 ## 7. The upload pipeline (client side)
 
 How gopbs drives the endpoints (per index):

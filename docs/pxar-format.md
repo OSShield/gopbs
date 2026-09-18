@@ -153,9 +153,13 @@ stream's chunks untouched, so re-uploads deduplicate almost entirely.
    - `offset` — absolute position of the payload record's **header** in the
      payload stream (not its body);
    - `size` — the content byte count (the referenced record's length − 16).
-   Refs are strictly increasing and contiguous: each ref's offset equals the
-   previous ref's `offset + 16 + size` (the first is 16, right after the
-   start marker).
+   Refs are strictly increasing. When every file is read they are also
+   contiguous: each ref's offset equals the previous ref's `offset + 16 +
+   size` (the first is 16, right after the start marker). With metadata
+   change detection (`archive.Options.Previous`) the payload stream reuses
+   whole chunks of the previous snapshot, so unreferenced bytes of files that
+   changed or disappeared may sit between referenced records; readers follow
+   the refs and never assume contiguity.
 
 **Payload stream** (`.ppxar`):
 

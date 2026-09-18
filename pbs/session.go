@@ -418,6 +418,19 @@ func (s *BackupSession) DownloadPrevious(ctx context.Context, archiveName string
 	return raw, nil
 }
 
+// PreviousIndex downloads and parses the previous snapshot's index for the
+// named archive (registering its chunks as known, like DownloadPrevious).
+// Metadata change detection needs the payload index's chunk layout before
+// generation starts, and the metadata index to validate a local copy of the
+// previous metadata stream.
+func (s *BackupSession) PreviousIndex(ctx context.Context, archiveName string) ([]IndexEntry, error) {
+	raw, err := s.DownloadPrevious(ctx, archiveName)
+	if err != nil {
+		return nil, err
+	}
+	return ParseDynamicIndex(raw)
+}
+
 // Finish uploads the manifest, commits the snapshot and closes the
 // connection. With a key configured the manifest is signed (and carries the
 // key fingerprint); with a master key, the wrapped encryption key is

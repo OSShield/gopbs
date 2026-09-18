@@ -141,6 +141,8 @@ type BackupResult struct {
 	// Warnings collects the non-fatal generation events (skipped entries,
 	// padded/truncated files, torn reads).
 	Warnings []archive.Warning
+	// Reuse reports metadata change detection (v2 with Archive.Previous)
+	Reuse archive.ReuseStats
 }
 
 // Backup performs one complete backup: scan → plan → generate → chunk →
@@ -241,6 +243,7 @@ func Backup(ctx context.Context, opts BackupOptions) (*BackupResult, error) {
 		if err != nil {
 			return nil, err
 		}
+		result.Reuse = arch.ReuseStats()
 
 	default: // FormatV1
 		stream, err := arch.GenerateV1(ctx)

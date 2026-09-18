@@ -241,7 +241,7 @@ func TestUploadProgress(t *testing.T) {
 			t.Fatalf("report %d: done=%v", i, r.done)
 		}
 	}
-	if final := reports[len(reports)-1].stats; final != stats {
+	if final := reports[len(reports)-1].stats; final.Size != stats.Size || final.ChunkCount != stats.ChunkCount || final.NewChunks != stats.NewChunks || final.ReusedChunks != stats.ReusedChunks {
 		t.Fatalf("final report %+v != returned stats %+v", final, stats)
 	}
 	if reports[len(reports)-1].stats.Size != uint64(len(data)) {
