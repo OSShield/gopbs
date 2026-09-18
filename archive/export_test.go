@@ -11,6 +11,11 @@ import (
 // Test-only exports: compiled only for tests, keeping internals reachable
 // from the external archive_test package without widening the public API.
 
+var (
+	ErrReservedName = errReservedName
+	PreludeJSON     = preludeJSON
+)
+
 // SyncPayloadRun binds n's payload via the synchronous source, runs mutate
 // (simulating the file changing between bind and read), then copies. Returns
 // the bound size, the emitted bytes, and the collected warnings.

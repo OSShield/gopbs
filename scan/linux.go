@@ -58,6 +58,10 @@ func (linuxReader) Readlink(path string) (string, error) {
 	return os.Readlink(path)
 }
 
+func (linuxReader) ReadFile(path string) ([]byte, error) {
+	return os.ReadFile(path)
+}
+
 const (
 	xattrACLAccess  = "system.posix_acl_access"
 	xattrACLDefault = "system.posix_acl_default"

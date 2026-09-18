@@ -46,6 +46,43 @@ different byte count is padded/truncated to it (with a warning). Readers are
 consumed during the backup, so a `BackupOptions` with streams is good for one
 call. **THIS MEANS THAT IF THE STREAM DATA SIZE INCREASES AFTER THE BACKUP OPTIONS ARE CREATED AND THE BACKUP HAS STARTED, THE BACKUP WILL NOT INCLUDE ALL OF THE DATA**
 
+**Excluding entries.** Exclusions are configured on `Archive.Scan`:
+
+- `Exclude` — patterns in `proxmox-backup-client --exclude` syntax, matched
+  against archive-relative paths (under a virtual root, the roots' archive
+  names are the first component). A leading `/` anchors the pattern to the
+  archive root; otherwise it matches at any depth (`*.tmp` by basename,
+  `foo/bar` any `…/foo/bar`). A trailing `/` matches directories only. `!`
+  turns a pattern into a re-include. The body is an fnmatch-style glob:
+  `*`, `?` and `[…]` never cross `/` (`[^…]` negates a class, `\` escapes),
+  and `**` as a whole component matches any number of components (at least
+  one at the end: `a/**` matches a's contents, not `a`). The **last**
+  matching pattern wins; an excluded directory is not descended. Invalid
+  patterns fail `archive.New` / `Backup` before any connection is made.
+- `PxarExcludeFiles` — honour `.pxarexclude` files found in the tree, like
+  the official client: one pattern per line, `#` comments, patterns scoped
+  to that directory's subtree with anchored lines relative to the file's
+  directory. Unparsable lines are reported as `WarnBadPattern` and ignored;
+  the file itself is archived. Off by default — a library should not
+  silently obey control files found inside the data it backs up.
+- `Filter func(path, archivePath string, st scan.Stat) bool` — arbitrary
+  logic (size, age, device boundaries); `false` omits the entry and its
+  subtree. Runs after the patterns, so it can veto a re-include.
+- `OnExclude` — audit hook receiving every omitted entry.
+
+`Exclude` patterns are recorded in the archive exactly as the official
+client records its `--exclude` options: v1 archives get a `.pxarexclude-cli`
+file emitted last in the root (mode 0600, owned by the process uid/gid,
+mtime 0, one pattern per line, also listed in the catalog), v2 archives
+carry them in the prelude record (`{"exclude-patterns":"…"}`). A real root
+entry named `.pxarexclude-cli` is dropped with a warning, as upstream does.
+`.pxarexclude` contents and `Filter` decisions are never recorded. The
+archive root itself is never excluded. Semantics were verified byte-for-byte
+against `pxar create --exclude`; one deliberate divergence: the official
+client ignores anchored lines in *subdirectory* `.pxarexclude` files (it
+prefixes them with the directory path but then matches without the leading
+slash), while gopbs honours them as documented.
+
 **Formats.** `FormatV1` = single `.pxar` index plus a `.pcat1` catalog;
 works everywhere. `FormatV2` = split `.mpxar`/`.ppxar` indexes, no catalog;
 metadata-only changes leave the payload stream fully deduplicated, but
@@ -73,7 +110,9 @@ run two indexes concurrently, so calls can arrive from two goroutines.
 - `WarnSizeChanged` — a payload yielded a different byte count than the
   committed size and was padded/truncated.
 - `WarnTorn` — a file's size or mtime changed *while* its content was read;
-  the archived bytes may interleave old and new content. 
+  the archived bytes may interleave old and new content.
+- `WarnBadPattern` — a `.pxarexclude` line failed to parse and was ignored
+  (`Err` is a `*scan.PatternError`, `Path` the file).
 
 ## Archive generation without a server
 
@@ -184,7 +223,9 @@ client, err := pbs.NewClient(pbs.Config{
 - **`catalog`**: `Writer` (streaming, bottom-up) and `Decode`.
 - **`scan`**: `Scanner` walks trees into `Node`s; the `MetadataReader`
   interface is the platform seam (full implementation: Linux). `StreamNode`
-  and `VirtualRoot` build virtual entries.
+  and `VirtualRoot` build virtual entries. `ParsePattern`/`PatternList`
+  implement the exclude-pattern syntax (usable standalone, e.g. to validate
+  user input or dry-run a pattern set with `PatternList.Match`).
 
 ## Concurrency and resource notes
 

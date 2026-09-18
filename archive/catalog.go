@@ -33,7 +33,7 @@ func (a *Archive) CatalogEntryName() string {
 // may differ from the archive's late-bound payload sizes (the catalog is a
 // lookup aid, not the archive's source of truth).
 func (a *Archive) GenerateCatalog(ctx context.Context) (io.ReadCloser, error) {
-	root, err := a.buildTree()
+	root, err := a.buildTree(false)
 	if err != nil {
 		return nil, err
 	}

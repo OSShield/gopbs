@@ -143,8 +143,11 @@ stream's chunks untouched, so re-uploads deduplicate almost entirely.
 
 1. A `FORMAT_VERSION` record, body `2` as u64 (version 1 is expressed by the
    record's absence).
-2. Optionally a `PRELUDE` record. The upstream client stores its CLI exclude
-   patterns there and omits the record when there are none; gopbs emits none.
+2. Optionally a `PRELUDE` record, present only when exclude patterns were
+   given (`scan.Options.Exclude`). Its body is the JSON object
+   `{"exclude-patterns":"<lines>"}` where `<lines>` is the `.pxarexclude-cli`
+   content described in §7, escaped the way serde_json does (`"`, `\` and
+   control characters only). Identical to what `pxar create --exclude` writes.
 3. The v1 structure (§2–4), except each regular file's `PAYLOAD` record is
    replaced by a fixed 32-byte `PAYLOAD_REF`:
    - `offset` — absolute position of the payload record's **header** in the
@@ -222,3 +225,23 @@ ref) comes from `fstat` on the already-opened file at dispatch time, not from
 the scan. Content that still changes between open and read is padded or
 truncated to the bound size (and reported as a warning), so structural
 offsets never break.
+
+## 7. Recorded exclude patterns
+
+Patterns supplied on the command line (`scan.Options.Exclude` in gopbs) are
+recorded in the archive exactly as the official client records `--exclude`:
+
+- **v1**: a synthetic regular file `.pxarexclude-cli` in the archive root —
+  mode `S_IFREG|0600`, uid/gid of the archiving process, mtime 0 — whose
+  content is one pattern per line in source form (`!` prefix for
+  re-includes, `/` prefix for anchored patterns, `/` suffix for
+  directory-only patterns), newline-terminated. It is appended to the root's
+  child list *after* sorting, so it is the last entry emitted (the goodbye
+  table is hash-ordered, so the position is a pure encoder quirk). The
+  catalog lists it with mtime 0. A real root entry of that name is dropped
+  by both encoders, patterns or not.
+- **v2**: the same lines wrapped in the `PRELUDE` record (§5); no synthetic
+  file.
+
+`.pxarexclude` files found in the tree are archived as ordinary files; their
+patterns and the `Filter` callback leave no trace.

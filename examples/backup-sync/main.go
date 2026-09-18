@@ -36,7 +36,13 @@ func main() {
 		source      = flag.String("source", "/tmp", "directory to back up")
 		name        = flag.String("name", "root", "archive name (uploaded as <name>.pxar.didx)")
 		backupID    = flag.String("id", "", "backup id (default: hostname)")
+		pxarExclude = flag.Bool("pxarexclude", false, "honour .pxarexclude files in the source tree")
+		excludes    []string
 	)
+	flag.Func("exclude", "exclude pattern in proxmox-backup-client syntax, e.g. '*.tmp', '!keep.tmp', 'cache/' (repeatable)", func(p string) error {
+		excludes = append(excludes, p)
+		return nil
+	})
 	flag.Parse()
 
 	started := time.Now()
@@ -50,7 +56,11 @@ func main() {
 		Archive: archive.Options{
 			Name:    *name,
 			Workers: 1, // fully synchronous generation
-			Scan:    scan.Options{SkipOnError: true},
+			Scan: scan.Options{
+				SkipOnError:      true,
+				Exclude:          excludes,     // recorded in the archive as .pxarexclude-cli
+				PxarExcludeFiles: *pxarExclude, // per-directory .pxarexclude files
+			},
 			OnWarn: func(w archive.Warning) {
 				fmt.Fprintf(os.Stderr, "warning: %s (kind %d, err %v)\n", w.Path, w.Kind, w.Err)
 			},

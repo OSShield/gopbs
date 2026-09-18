@@ -56,4 +56,8 @@ type MetadataReader interface {
 	// QuotaProjID returns the filesystem quota project id and whether one is
 	// set (project id 0 counts as unset).
 	QuotaProjID(path string) (uint64, bool, error)
+	// ReadFile returns the contents of a regular file (the scanner reads
+	// .pxarexclude files with it). A missing file must be reported with an
+	// error satisfying errors.Is(err, fs.ErrNotExist).
+	ReadFile(path string) ([]byte, error)
 }

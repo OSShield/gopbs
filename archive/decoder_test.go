@@ -32,6 +32,7 @@ type decNode struct {
 	}
 	device   pxar.Device
 	children []*decNode
+	prelude  []byte // v2 root: the prelude record body, nil when absent
 
 	// gbExtra is what the parent's goodbye item adds on top of the node's
 	// metadata-stream span: the payload content size for v2 regular files.
@@ -106,6 +107,12 @@ func parseArchiveV2(meta, payload []byte) (*decNode, error) {
 	if v := binary.LittleEndian.Uint64(p.body()); v != 2 {
 		return nil, fmt.Errorf("format version %d, want 2", v)
 	}
+	var prelude []byte
+	if typ, _, err := p.header(); err != nil {
+		return nil, err
+	} else if typ == pxar.TypePrelude {
+		prelude = p.body()
+	}
 
 	if uint64(len(payload)) < 2*pxar.MarkerSize {
 		return nil, fmt.Errorf("payload stream too short: %d bytes", len(payload))
@@ -122,6 +129,7 @@ func parseArchiveV2(meta, payload []byte) (*decNode, error) {
 	if err != nil {
 		return nil, err
 	}
+	root.prelude = prelude
 	if p.pos != uint64(len(meta)) {
 		return nil, fmt.Errorf("trailing metadata bytes: parsed %d of %d", p.pos, len(meta))
 	}
