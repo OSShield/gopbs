@@ -151,24 +151,26 @@ multi-stream and v2 backups, each with a live progress bar.
 - [ ] Backup and restore sources
   - [x] Linux filesystem
     - [x] Plain Filesystem (ext4, xfs, btrfs, etc.)
-    - [ ] Snapshot-based (LVM, ZFS, BTRFS, etc.)
-    - [ ] Remote filesystems (via rclone)
-    - [ ] Block devices
+    - ~~[ ] Snapshot-based (LVM, ZFS, BTRFS, etc.)~~
+    - ~~[ ] Remote filesystems (via rclone)~~
+    - ~~[ ] Block devices~~
 
   - [x] Windows filesystem
     - [x] Plain Filesystem (NTFS, FAT32, exFAT, etc.) — types, sizes, mtimes, hardlinks, symlinks/junctions; no ACLs or alternate streams yet
-    - [ ] Snapshot-based (VSS) — callers point the scanner at a shadow copy (fallbck does)
+    - ~~[ ] Snapshot-based (VSS) — callers point the scanner at a shadow copy (fallbck does)~~
 
-  - [ ] Backup and restore databases
-    - [ ] MySQL
-    - [ ] PostgreSQL
-    - [ ] MongoDB
-    - [ ] SQL Server
+  ~~- [ ] Backup and restore databases~~
+    - ~~[ ] MySQL~~
+    - ~~[ ] PostgreSQL~~
+    - ~~[ ] MongoDB~~
+    - ~~[ ] SQL Server~~
 
-  - [ ] Backup and restore kubernetes
-    - [ ] Backup PVCs (non-snapshot)
-    - [ ] Backup snapshots (via CSI and Snapshot API)
-    - [ ] Backup cluster resources/state
+  - ~~[ ] Backup and restore kubernetes~~
+    - ~~[ ] Backup PVCs (non-snapshot)~~
+    - ~~[ ] Backup snapshots (via CSI and Snapshot API)~~
+    - ~~[ ] Backup cluster resources/state~~
+
+~~items~~ will be implemented in [fallbck](https://fallbck.eu), which aims to be more of an open source full-service application backup solution for PBS. More info to come.
 
 ## Documentation
 
