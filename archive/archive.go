@@ -155,7 +155,9 @@ func (a *Archive) AddDirectory(path string) error {
 // only root the PXAR root entry carries no name, so as only affects the
 // multi-root layout.
 func (a *Archive) AddDirectoryAs(path, as string) error {
-	info, err := os.Lstat(path)
+	// A root that is a symlink to a directory is accepted and scanned through
+	// the link (scan.Follower): shadow copies are exposed that way
+	info, err := os.Stat(path)
 	if err != nil {
 		return fmt.Errorf("archive: %w", err)
 	}
@@ -272,10 +274,11 @@ func cliPatternNode(content []byte) *scan.Node {
 	if err != nil {
 		panic(err) // the name is a valid constant
 	}
+	uid, gid := processIDs()
 	n.Stat = scan.Stat{
 		Mode:  scan.ModeRegular | 0o600,
-		UID:   uint32(os.Getuid()),
-		GID:   uint32(os.Getgid()),
+		UID:   uid,
+		GID:   gid,
 		Size:  int64(len(content)),
 		Nlink: 1,
 	}

@@ -1,11 +1,11 @@
-//go:build !linux
+//go:build !linux && !windows
 
 package scan
 
 import "errors"
 
-// DefaultReader returns the platform MetadataReader. Only Linux has one so
-// far; other platforms must supply Options.Reader.
+// DefaultReader returns the platform MetadataReader. Linux and Windows have
+// one; other platforms must supply Options.Reader.
 func DefaultReader() (MetadataReader, error) {
 	return nil, errors.New("scan: no default MetadataReader for this platform (supply Options.Reader)")
 }

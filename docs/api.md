@@ -272,3 +272,17 @@ Payload references of a reused archive are no longer contiguous (the padding
 inside injected chunks is unreferenced), which every PBS tool tolerates: the
 metadata stream addresses payload records by absolute offset.
 
+## Windows
+
+`scan.DefaultReader` exists on Windows too (`scan/windows.go`). It records
+directories, regular files, symbolic links and junctions with synthesised
+POSIX modes (0755 / 0644, 0444 for read-only files, 0777 for links), uid/gid
+0, the NTFS last-write time, and hardlink identity from the volume serial and
+file index. Extended attributes, ACLs (security descriptors), alternate data
+streams and quota ids are not archived. Link targets are recorded with
+forward slashes. Paths are opened in extended-length form, so trees deeper
+than MAX_PATH work. Reading a live volume hits locked files; take a VSS
+shadow copy and point the archive roots at it (the scanner needs no special
+support: a shadow copy exposed through a directory symlink is an ordinary
+tree).
+
