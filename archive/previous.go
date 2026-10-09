@@ -162,7 +162,9 @@ func planReuse(nodes []*scan.Node, paths []string, prev *Previous, threshold flo
 	var scratch []byte
 	unchanged := func(i int) (prevFile, bool) {
 		n := nodes[i]
-		if n.Kind != scan.KindFile {
+		// Streams qualify too: a virtual tree (AddTree) declares size and
+		// metadata up front, and a reused stream's reader is never consumed
+		if n.Kind != scan.KindFile && n.Kind != scan.KindStream {
 			return prevFile{}, false
 		}
 		pf, ok := prev.files[paths[i]]
