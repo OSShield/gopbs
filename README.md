@@ -148,6 +148,7 @@ multi-stream and v2 backups, each with a live progress bar.
   - [x] Read blobs and raw dynamic indexes (verified and decrypted)
   - [ ] Restore to disk (no pxar decoder)
   - [x] Restore to stream (`io.Reader`)
+  - [x] Browse an archive and read single files (`io/fs`, random access over the index)
   - [x] Synchronous and parallel restore
 
 - [ ] Backup and restore sources

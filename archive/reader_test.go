@@ -5,9 +5,13 @@ package archive_test
 import (
 	"bytes"
 	"io"
+	"io/fs"
 	"math/rand"
+	"os"
+	"path/filepath"
 	"slices"
 	"testing"
+	"testing/fstest"
 
 	"github.com/osshield/gopbs/archive"
 	"github.com/osshield/gopbs/pxar"
@@ -88,5 +92,53 @@ func compareReader(t *testing.T, r *pxar.Reader, root *decNode) {
 	walk(root, "")
 	if _, err := r.Next(); err != io.EOF {
 		t.Fatalf("after the last entry: %v, want io.EOF", err)
+	}
+}
+
+// Generated archives opened as file systems match the source tree.
+func TestPxarFSMatchesTree(t *testing.T) {
+	for seed := int64(0); seed < 5; seed++ {
+		root := genTree(t, rand.New(rand.NewSource(seed)))
+		v1 := generateWith(t, root, 4, 0, nil)
+		a, err := archive.New(archive.Options{Name: "fs", Workers: 4})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := a.AddDirectory(root); err != nil {
+			t.Fatal(err)
+		}
+		meta, payload := generateV2(t, a)
+
+		v1fs, err := pxar.OpenV1(bytes.NewReader(v1), int64(len(v1)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		v2fs, err := pxar.OpenV2(bytes.NewReader(meta), int64(len(meta)), bytes.NewReader(payload))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, fsys := range []*pxar.FS{v1fs, v2fs} {
+			var files []string
+			err := fs.WalkDir(os.DirFS(root), ".", func(path string, d fs.DirEntry, err error) error {
+				if err != nil {
+					return err
+				}
+				if d.Type().IsRegular() {
+					files = append(files, path)
+					want, _ := os.ReadFile(filepath.Join(root, path))
+					got, err := fs.ReadFile(fsys, path)
+					if err != nil || !bytes.Equal(got, want) {
+						t.Errorf("seed %d: %s: content differs (%v)", seed, path, err)
+					}
+				}
+				return nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := fstest.TestFS(fsys, files...); err != nil {
+				t.Fatalf("seed %d: %v", seed, err)
+			}
+		}
 	}
 }

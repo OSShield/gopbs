@@ -413,7 +413,13 @@ func (r *Reader) payloadRecord(n *Node, typ, length uint64) error {
 			r.content, r.left = errReader{errors.New("no payload stream")}, n.Size
 			return nil
 		}
-		if err := r.checkPayload(n); err != nil {
+		if !r.checked {
+			if err := checkPayloadStart(r.payload); err != nil {
+				return err
+			}
+			r.checked = true
+		}
+		if err := checkPayloadRecord(r.payload, n); err != nil {
 			return err
 		}
 		r.content = io.NewSectionReader(r.payload, int64(n.PayloadOffset+HeaderSize), int64(n.Size))
@@ -423,23 +429,25 @@ func (r *Reader) payloadRecord(n *Node, typ, length uint64) error {
 	return fmt.Errorf("pxar: expected payload for %q at %d, got %#x", n.Path, r.pos, typ)
 }
 
-// checkPayload verifies that a payload reference resolves to a payload
-// record of the referenced size.
-func (r *Reader) checkPayload(n *Node) error {
+func checkPayloadStart(payload io.ReaderAt) error {
 	var hdr [HeaderSize]byte
-	if !r.checked {
-		if _, err := r.payload.ReadAt(hdr[:], 0); err != nil {
-			return fmt.Errorf("pxar: payload stream: %w", err)
-		}
-		if binary.LittleEndian.Uint64(hdr[:]) != PayloadStartMarker {
-			return errors.New("pxar: payload stream has no start marker")
-		}
-		r.checked = true
+	if _, err := payload.ReadAt(hdr[:], 0); err != nil {
+		return fmt.Errorf("pxar: payload stream: %w", err)
 	}
+	if binary.LittleEndian.Uint64(hdr[:]) != PayloadStartMarker {
+		return errors.New("pxar: payload stream has no start marker")
+	}
+	return nil
+}
+
+// checkPayloadRecord verifies that a payload reference resolves to a payload
+// record of the referenced size.
+func checkPayloadRecord(payload io.ReaderAt, n *Node) error {
+	var hdr [HeaderSize]byte
 	if n.PayloadOffset > 1<<62 || n.Size > 1<<62 {
 		return fmt.Errorf("pxar: payload ref for %q out of range", n.Path)
 	}
-	if _, err := r.payload.ReadAt(hdr[:], int64(n.PayloadOffset)); err != nil {
+	if _, err := payload.ReadAt(hdr[:], int64(n.PayloadOffset)); err != nil {
 		return fmt.Errorf("pxar: payload of %q at %d: %w", n.Path, n.PayloadOffset, err)
 	}
 	if binary.LittleEndian.Uint64(hdr[:]) != TypePayload || binary.LittleEndian.Uint64(hdr[8:]) != HeaderSize+n.Size {

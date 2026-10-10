@@ -3,6 +3,7 @@ package pxar_test
 import (
 	"bytes"
 	"io"
+	"io/fs"
 	"strings"
 	"testing"
 
@@ -101,5 +102,29 @@ func FuzzReader(f *testing.F) {
 				}
 			}
 		}
+	})
+}
+
+// FuzzFS opens arbitrary bytes as a v1 archive and walks it: lookups must
+// terminate without panicking, whatever the goodbye tables claim.
+func FuzzFS(f *testing.F) {
+	f.Add(encDir(nil, []kid{
+		{name: "a", recs: regular("A")},
+		{name: "h", recs: pxar.AppendHardlink(nil, 1, "a")},
+		{name: "l", recs: symlink("d/x")},
+		{name: "d", dir: []kid{{name: "x", recs: regular("X")}}},
+	}))
+	f.Fuzz(func(t *testing.T, data []byte) {
+		fsys, err := pxar.OpenV1(bytes.NewReader(data), int64(len(data)))
+		if err != nil {
+			return
+		}
+		fs.WalkDir(fsys, ".", func(path string, d fs.DirEntry, err error) error {
+			if err == nil && d.Type().IsRegular() {
+				fs.ReadFile(fsys, path)
+			}
+			fsys.Stat(path)
+			return nil
+		})
 	})
 }

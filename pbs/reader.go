@@ -208,40 +208,48 @@ func (r *ReaderSession) DownloadBlob(ctx context.Context, name string) ([]byte, 
 	return data, nil
 }
 
-// OpenDynamicIndex streams the content of a .didx file, verified against the
-// manifest. ".didx" is appended to name when missing. A verification failure
-// is returned from Read, never io.EOF. ctx bounds the whole stream; Close
-// releases its goroutines.
-func (r *ReaderSession) OpenDynamicIndex(ctx context.Context, name string) (io.ReadCloser, error) {
-	f, err := r.manifestFile(ctx, name, ".didx")
-	if err != nil {
-		return nil, err
+// loadIndex downloads a .didx file and verifies it against the manifest
+// before any chunk is fetched. keyed reports keyed chunk digests.
+func (r *ReaderSession) loadIndex(ctx context.Context, name string) (f ManifestFile, entries []IndexEntry, keyed bool, err error) {
+	if f, err = r.manifestFile(ctx, name, ".didx"); err != nil {
+		return f, nil, false, err
 	}
-	keyed := f.CryptMode == string(CryptModeEncrypt)
+	keyed = f.CryptMode == string(CryptModeEncrypt)
 	if keyed && r.client.crypt == nil {
-		return nil, fmt.Errorf("pbs: %s is encrypted but no key is configured", f.Filename)
+		return f, nil, false, fmt.Errorf("pbs: %s is encrypted but no key is configured", f.Filename)
 	}
 
 	raw, err := r.download(ctx, f.Filename)
 	if err != nil {
-		return nil, err
+		return f, nil, false, err
 	}
-	entries, err := ParseDynamicIndex(raw)
-	if err != nil {
-		return nil, fmt.Errorf("pbs: %s: %w", f.Filename, err)
+	if entries, err = ParseDynamicIndex(raw); err != nil {
+		return f, nil, false, fmt.Errorf("pbs: %s: %w", f.Filename, err)
 	}
 	csum := sha256.New()
 	var prev uint64
 	for _, e := range entries {
 		if e.EndOffset <= prev {
-			return nil, fmt.Errorf("pbs: %s: chunk end offsets are not ascending", f.Filename)
+			return f, nil, false, fmt.Errorf("pbs: %s: chunk end offsets are not ascending", f.Filename)
 		}
 		prev = e.EndOffset
 		binary.Write(csum, binary.LittleEndian, e.EndOffset)
 		csum.Write(e.Digest[:])
 	}
 	if hex.EncodeToString(csum.Sum(nil)) != f.Csum {
-		return nil, fmt.Errorf("pbs: %s: index checksum does not match the manifest", f.Filename)
+		return f, nil, false, fmt.Errorf("pbs: %s: index checksum does not match the manifest", f.Filename)
+	}
+	return f, entries, keyed, nil
+}
+
+// OpenDynamicIndex streams the content of a .didx file, verified against the
+// manifest. ".didx" is appended to name when missing. A verification failure
+// is returned from Read, never io.EOF. ctx bounds the whole stream; Close
+// releases its goroutines.
+func (r *ReaderSession) OpenDynamicIndex(ctx context.Context, name string) (io.ReadCloser, error) {
+	f, entries, keyed, err := r.loadIndex(ctx, name)
+	if err != nil {
+		return nil, err
 	}
 
 	workers := r.client.cfg.Workers
