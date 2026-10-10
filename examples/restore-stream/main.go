@@ -4,7 +4,7 @@
 // The flag defaults match the test stack in tests/compose.yml:
 //
 //	cd tests && docker compose up -d garage pmoxs3
-//	go run ./examples/restore-stream -id myhost -archive root.pxar -out /tmp/root.pxar
+//	go run ./examples/restore-stream -id "$(hostname)" -archive root.pxar -out /tmp/root.pxar
 package main
 
 import (
@@ -27,12 +27,12 @@ func main() {
 		password    = flag.String("password", "garagegaragegarage", "password")
 		fingerprint = flag.String("fingerprint", "55:BC:29:4B:BA:B6:A1:03:42:A9:D8:51:14:9D:BD:00:D2:2A:9C:A1:B8:4A:85:E1:AF:B2:0C:48:40:D6:CC:A4", "server certificate SHA-256 fingerprint")
 		datastore   = flag.String("datastore", "pbs", "datastore name")
-		backupID    = flag.String("id", "", "backup id (required)")
+		backupID    = flag.String("id", "", "backup id (default: hostname)")
 		archiveName = flag.String("archive", "", "dynamic index to read, e.g. data.db (required)")
 		outPath     = flag.String("out", "-", "output file; - for stdout")
 	)
 	flag.Parse()
-	if *backupID == "" || *archiveName == "" {
+	if *archiveName == "" {
 		flag.Usage()
 		os.Exit(2)
 	}
@@ -45,6 +45,11 @@ func main() {
 	})
 	if err != nil {
 		log.Fatal(err)
+	}
+	if *backupID == "" {
+		if *backupID, err = os.Hostname(); err != nil {
+			log.Fatal(err)
+		}
 	}
 	ctx := context.Background()
 
@@ -81,8 +86,10 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	if err := out.Close(); err != nil {
-		log.Fatal(err)
+	if out != os.Stdout {
+		if err := out.Close(); err != nil {
+			log.Fatal(err)
+		}
 	}
 	fmt.Fprintf(os.Stderr, "%d bytes restored and verified\n", n)
 }
