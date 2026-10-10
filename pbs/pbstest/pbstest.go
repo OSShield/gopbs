@@ -1,9 +1,9 @@
 // Package pbstest provides an in-process mock PBS server for testing code
 // built on package pbs: a TLS listener that answers the regular API's
-// ticket login, performs the backup-protocol 101 upgrade, then serves
-// the session endpoints over HTTP/2 — verifying chunk framing (magic, CRC,
-// compression, digest) as the real server would, and recording everything
-// for assertions.
+// ticket login and snapshot listing, performs the backup- and
+// reader-protocol 101 upgrades, then serves the session endpoints over
+// HTTP/2 — verifying chunk framing (magic, CRC, compression, digest) as the
+// real server would, and recording everything for assertions.
 package pbstest
 
 import (
@@ -28,6 +28,8 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -51,6 +53,23 @@ type Index struct {
 	Csum       string
 	Size       uint64
 	ChunkCount uint64
+}
+
+// Snapshot is a snapshot committed by a finished backup session.
+type Snapshot struct {
+	NS, Type, ID string
+	Time         int64
+	Files        map[string][]byte // file name -> stored bytes (blob or didx)
+	Sizes        map[string]uint64 // file name -> manifest size
+}
+
+type session struct {
+	ns, typ, id string
+	time        int64
+	wids        []uint64
+	blobs       map[string][]byte // encoded, as stored
+	snap        *Snapshot         // reader sessions only
+	allowed     map[string]bool   // reader: chunks of downloaded indexes
 }
 
 // Server is a mock PBS server. The exported fields record what clients did
@@ -80,6 +99,7 @@ type Server struct {
 	Previous     map[string][]byte // archive name -> raw didx
 	Finished     bool
 	FailUpgrade  int            // respond with this status instead of 101
+	RejectAuth   bool           // answer every request with 401
 	FailPath     map[string]int // h2 path -> status for the next call
 
 	// PreviousMissingStatus/Msg override the response for a /previous
@@ -88,6 +108,9 @@ type Server struct {
 	// depending on whether the snapshot or just the archive is missing.
 	PreviousMissingStatus int
 	PreviousMissingMsg    string
+
+	ChunksEncoded map[string][]byte // digest hex -> framed chunk as stored
+	Snapshots     []*Snapshot       // committed at /finish
 
 	sessions []net.Conn
 	nextWID  uint64
@@ -141,6 +164,8 @@ func NewServer(t testing.TB) *Server {
 		BlobsEncoded: make(map[string][]byte),
 		Previous:     make(map[string][]byte),
 		FailPath:     make(map[string]int),
+
+		ChunksEncoded: make(map[string][]byte),
 	}
 	go m.serve()
 	t.Cleanup(func() { ln.Close(); dec.Close() })
@@ -165,12 +190,31 @@ func (m *Server) handleConn(conn net.Conn) {
 		if err != nil {
 			return
 		}
+		m.Lock()
+		reject := m.RejectAuth
+		m.Unlock()
+		if reject {
+			// Echo the credentials like a careless server, to prove the
+			// client keeps them out of errors.
+			body := "authentication failure: " + req.Header.Get("Authorization") + req.Header.Get("Cookie")
+			fmt.Fprintf(conn, "HTTP/1.1 401 Unauthorized\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s",
+				len(body), body)
+			return
+		}
 		switch {
 		case req.URL.Path == "/api2/json/access/ticket":
 			m.handleTicket(conn, req)
 			return // Connection: close
 		case strings.HasSuffix(req.URL.Path, "/api2/json/backup"):
 			m.handleUpgrade(conn, req)
+			return
+		case strings.HasSuffix(req.URL.Path, "/api2/json/reader"):
+			m.handleReaderUpgrade(conn, req)
+			return
+		case req.Method == http.MethodGet &&
+			strings.HasPrefix(req.URL.Path, "/api2/json/admin/datastore/") &&
+			strings.HasSuffix(req.URL.Path, "/snapshots"):
+			m.handleListSnapshots(conn, req)
 			return
 		default:
 			fmt.Fprintf(conn, "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
@@ -220,9 +264,176 @@ func (m *Server) handleUpgrade(conn net.Conn, req *http.Request) {
 	m.sessions = append(m.sessions, conn)
 	m.Unlock()
 
+	sess := newSession(req.URL.Query())
+	sess.blobs = make(map[string][]byte)
 	(&http2.Server{}).ServeConn(conn, &http2.ServeConnOpts{
-		Handler: http.HandlerFunc(m.handleH2),
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { m.handleH2(sess, w, r) }),
 	})
+}
+
+func newSession(q url.Values) *session {
+	t, _ := strconv.ParseInt(q.Get("backup-time"), 10, 64)
+	return &session{ns: q.Get("ns"), typ: q.Get("backup-type"), id: q.Get("backup-id"), time: t}
+}
+
+// Callers hold the lock.
+func (m *Server) findSnapshot(ns, typ, id string, time int64) *Snapshot {
+	for _, s := range m.Snapshots {
+		if s.NS == ns && s.Type == typ && s.ID == id && s.Time == time {
+			return s
+		}
+	}
+	return nil
+}
+
+// Callers hold the lock.
+func (m *Server) lastSnapshot(ns, typ, id string, before int64) *Snapshot {
+	var last *Snapshot
+	for _, s := range m.Snapshots {
+		if s.NS == ns && s.Type == typ && s.ID == id && s.Time < before && (last == nil || s.Time > last.Time) {
+			last = s
+		}
+	}
+	return last
+}
+
+// Callers hold the lock.
+func (m *Server) commit(sess *session) error {
+	snap := &Snapshot{
+		NS: sess.ns, Type: sess.typ, ID: sess.id, Time: sess.time,
+		Files: make(map[string][]byte),
+		Sizes: make(map[string]uint64),
+	}
+	for name, b := range sess.blobs {
+		snap.Files[name] = b
+		snap.Sizes[name] = uint64(len(b))
+	}
+	for _, wid := range sess.wids {
+		idx := m.Indexes[wid]
+		if !idx.Closed {
+			return fmt.Errorf("index %s not closed", idx.Name)
+		}
+		out := make([]byte, 4096, 4096+40*len(idx.Digests))
+		copy(out, []byte{28, 145, 78, 165, 25, 186, 179, 205})
+		for i, d := range idx.Digests {
+			end := idx.Size
+			if i+1 < len(idx.Offsets) {
+				end = idx.Offsets[i+1]
+			}
+			raw, _ := hex.DecodeString(d)
+			out = binary.LittleEndian.AppendUint64(out, end)
+			out = append(out, raw...)
+		}
+		snap.Files[idx.Name] = out
+		snap.Sizes[idx.Name] = idx.Size
+	}
+	if m.findSnapshot(snap.NS, snap.Type, snap.ID, snap.Time) != nil {
+		return fmt.Errorf("snapshot exists")
+	}
+	m.Snapshots = append(m.Snapshots, snap)
+	return nil
+}
+
+func (m *Server) handleReaderUpgrade(conn net.Conn, req *http.Request) {
+	m.Lock()
+	m.UpgradeReqs = append(m.UpgradeReqs, req)
+	sess := newSession(req.URL.Query())
+	sess.snap = m.findSnapshot(sess.ns, sess.typ, sess.id, sess.time)
+	sess.allowed = make(map[string]bool)
+	m.Unlock()
+
+	if req.Header.Get("Upgrade") != "proxmox-backup-reader-protocol-v1" {
+		fmt.Fprintf(conn, "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+		return
+	}
+	if sess.snap == nil {
+		fmt.Fprintf(conn, "HTTP/1.1 404 Not Found\r\nContent-Length: 18\r\nConnection: close\r\n\r\nno such snapshot\r\n")
+		return
+	}
+	fmt.Fprintf(conn, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: proxmox-backup-reader-protocol-v1\r\nConnection: Upgrade\r\n\r\n")
+
+	m.Lock()
+	m.sessions = append(m.sessions, conn)
+	m.Unlock()
+
+	(&http2.Server{}).ServeConn(conn, &http2.ServeConnOpts{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { m.handleReaderH2(sess, w, r) }),
+	})
+}
+
+func (m *Server) handleReaderH2(sess *session, w http.ResponseWriter, r *http.Request) {
+	m.Lock()
+	defer m.Unlock()
+	switch r.Method + " " + r.URL.Path {
+	case "GET /download":
+		name := r.URL.Query().Get("file-name")
+		data, ok := sess.snap.Files[name]
+		if !ok {
+			httpError(w, 404, "no file %s", name)
+			return
+		}
+		// The real server serves only chunks of downloaded indexes.
+		if strings.HasSuffix(name, ".didx") {
+			for i := 4096; i+40 <= len(data); i += 40 {
+				sess.allowed[hex.EncodeToString(data[i+8:i+40])] = true
+			}
+		}
+		w.Write(data)
+
+	case "GET /chunk":
+		d := r.URL.Query().Get("digest")
+		if !sess.allowed[d] {
+			httpError(w, 400, "chunk %s not in a downloaded index", d)
+			return
+		}
+		data, ok := m.ChunksEncoded[d]
+		if !ok {
+			httpError(w, 404, "no chunk %s", d)
+			return
+		}
+		w.Write(data)
+
+	default:
+		httpError(w, 404, "mock: no reader endpoint %s %s", r.Method, r.URL.Path)
+	}
+}
+
+func (m *Server) handleListSnapshots(conn net.Conn, req *http.Request) {
+	q := req.URL.Query()
+	type file struct {
+		Filename  string `json:"filename"`
+		Size      uint64 `json:"size"`
+		CryptMode string `json:"crypt-mode"`
+	}
+	type entry struct {
+		Type      string `json:"backup-type"`
+		ID        string `json:"backup-id"`
+		Time      int64  `json:"backup-time"`
+		Size      uint64 `json:"size"`
+		Protected bool   `json:"protected"`
+		Files     []file `json:"files"`
+	}
+	data := []entry{}
+	m.Lock()
+	for _, s := range m.Snapshots {
+		if s.NS != q.Get("ns") ||
+			(q.Get("backup-type") != "" && s.Type != q.Get("backup-type")) ||
+			(q.Get("backup-id") != "" && s.ID != q.Get("backup-id")) {
+			continue
+		}
+		e := entry{Type: s.Type, ID: s.ID, Time: s.Time}
+		for name, size := range s.Sizes {
+			e.Files = append(e.Files, file{Filename: name, Size: size, CryptMode: "none"})
+			e.Size += size
+		}
+		sort.Slice(e.Files, func(i, j int) bool { return e.Files[i].Filename < e.Files[j].Filename })
+		data = append(data, e)
+	}
+	m.Unlock()
+
+	body, _ := json.Marshal(map[string]any{"data": data})
+	fmt.Fprintf(conn, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s",
+		len(body), body)
 }
 
 // DropSessions closes every upgraded session connection.
@@ -240,7 +451,7 @@ func httpError(w http.ResponseWriter, code int, format string, args ...any) {
 	fmt.Fprintf(w, format, args...)
 }
 
-func (m *Server) handleH2(w http.ResponseWriter, r *http.Request) {
+func (m *Server) handleH2(sess *session, w http.ResponseWriter, r *http.Request) {
 	m.Lock()
 	if code, ok := m.FailPath[r.URL.Path]; ok {
 		delete(m.FailPath, r.URL.Path)
@@ -278,6 +489,7 @@ func (m *Server) handleH2(w http.ResponseWriter, r *http.Request) {
 		wid := m.nextWID
 		m.nextWID++
 		m.Indexes[wid] = &Index{Name: in.Name}
+		sess.wids = append(sess.wids, wid)
 		m.Unlock()
 		fmt.Fprintf(w, `{"data":%d}`, wid)
 
@@ -393,6 +605,7 @@ func (m *Server) handleH2(w http.ResponseWriter, r *http.Request) {
 		}
 		m.Lock()
 		m.Chunks[q.Get("digest")] = plain
+		m.ChunksEncoded[q.Get("digest")] = append([]byte(nil), body...)
 		m.known[q.Get("digest")] = true
 		m.Unlock()
 
@@ -410,11 +623,19 @@ func (m *Server) handleH2(w http.ResponseWriter, r *http.Request) {
 		m.Lock()
 		m.Blobs[q.Get("file-name")] = payload
 		m.BlobsEncoded[q.Get("file-name")] = append([]byte(nil), body...)
+		sess.blobs[q.Get("file-name")] = append([]byte(nil), body...)
 		m.Unlock()
 
 	case "GET /previous":
 		m.Lock()
-		data, ok := m.Previous[r.URL.Query().Get("archive-name")]
+		name := r.URL.Query().Get("archive-name")
+		data, ok := m.Previous[name]
+		if !ok {
+			// As on the real server.
+			if last := m.lastSnapshot(sess.ns, sess.typ, sess.id, sess.time); last != nil {
+				data, ok = last.Files[name]
+			}
+		}
 		if ok {
 			// Like the real server, downloading the previous index makes
 			// its chunks known to the session.
@@ -436,8 +657,12 @@ func (m *Server) handleH2(w http.ResponseWriter, r *http.Request) {
 
 	case "POST /finish":
 		m.Lock()
+		defer m.Unlock()
+		if err := m.commit(sess); err != nil {
+			httpError(w, 400, "finish: %v", err)
+			return
+		}
 		m.Finished = true
-		m.Unlock()
 
 	default:
 		httpError(w, 404, "mock: no endpoint %s %s", r.Method, r.URL.Path)

@@ -62,7 +62,8 @@ type Config struct {
 	// Namespace within the datastore; empty for the root namespace.
 	Namespace string
 
-	// Workers is the number of concurrent chunk uploads; 0 = 4.
+	// Workers is the number of concurrent chunk uploads, and of chunk
+	// downloads per OpenDynamicIndex stream; 0 = 4.
 	Workers int
 
 	// ChunkSizeAvg is the content-defined chunking target; 0 = 4 MiB.
@@ -73,7 +74,7 @@ type Config struct {
 	// given key; nil uploads plaintext with crypt-mode "none". Treated as
 	// read-only after NewClient.
 	Crypt *CryptConfig
-  
+
 	// DialSession, when set, replaces the built-in TLS dial and HTTP/1.1
 	// protocol upgrade: StartBackup calls it once per session and expects a
 	// connection on which the backup protocol has already been negotiated —
@@ -82,6 +83,8 @@ type Config struct {
 	// (and holds the PBS credentials) on the client's behalf. With
 	// DialSession set, BaseURL, Auth and Datastore are optional and the TLS
 	// settings (Fingerprint, InsecureSkipAll) do not apply to the session.
+	// StartReader does not use it: the dialer cannot tell which protocol to
+	// upgrade to.
 	DialSession func(ctx context.Context, ref SnapshotRef) (net.Conn, error)
 
 	// OnUploadProgress, when set, is called by the upload pipeline as chunks
