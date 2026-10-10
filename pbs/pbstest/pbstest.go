@@ -1,10 +1,10 @@
-package pbs_test
-
-// An in-process mock PBS server: a TLS listener that answers the regular
-// API's ticket login, performs the backup-protocol 101 upgrade, then serves
+// Package pbstest provides an in-process mock PBS server for testing code
+// built on package pbs: a TLS listener that answers the regular API's
+// ticket login, performs the backup-protocol 101 upgrade, then serves
 // the session endpoints over HTTP/2 — verifying chunk framing (magic, CRC,
 // compression, digest) as the real server would, and recording everything
 // for assertions.
+package pbstest
 
 import (
 	"bufio"
@@ -38,54 +38,65 @@ import (
 	"golang.org/x/net/http2"
 )
 
-type mockIndex struct {
-	name       string
-	digests    []string
-	offsets    []uint64
-	closed     bool
-	csum       string
-	size       uint64
-	chunkCount uint64
+// Password is the only password the mock's ticket login accepts; token
+// auth is accepted with any credentials.
+const Password = "hunter2"
+
+// Index is a dynamic index as recorded by the mock.
+type Index struct {
+	Name       string
+	Digests    []string
+	Offsets    []uint64
+	Closed     bool
+	Csum       string
+	Size       uint64
+	ChunkCount uint64
 }
 
-type mockPBS struct {
-	t           *testing.T
-	ln          net.Listener
-	fingerprint string
-	baseURL     string
+// Server is a mock PBS server. The exported fields record what clients did
+// and inject failures; once the server is serving, access them only while
+// holding the embedded mutex.
+type Server struct {
+	URL         string // base URL for pbs.Config.BaseURL
+	Fingerprint string // certificate fingerprint for pbs.Config.Fingerprint
 
+	t    testing.TB
+	ln   net.Listener
 	zdec *zstd.Decoder
 
 	// cryptKey/idKey let the mock verify encrypted uploads the way the
-	// client-side spec says a reader would; set via setCryptKey.
+	// client-side spec says a reader would; set via SetCryptKey.
 	cryptKey *[32]byte
 	idKey    [32]byte
 
-	mu           sync.Mutex
-	loginCount   int
-	upgradeReqs  []*http.Request
-	sessions     []net.Conn
-	nextWID      uint64
-	indexes      map[uint64]*mockIndex
-	chunks       map[string][]byte // digest hex -> plaintext
-	known        map[string]bool   // uploaded or registered via /previous
-	chunkDelay   func(digestHex string) time.Duration
-	blobs        map[string][]byte // file name -> decoded payload
-	blobsEncoded map[string][]byte // file name -> encoded blob as stored
-	previous     map[string][]byte // archive name -> raw didx
-	finished     bool
-	failUpgrade  int            // respond with this status instead of 101
-	failPath     map[string]int // h2 path -> status for the next call
+	sync.Mutex
+	LoginCount   int
+	UpgradeReqs  []*http.Request
+	Indexes      map[uint64]*Index // keyed by writer id
+	Chunks       map[string][]byte // digest hex -> plaintext
+	ChunkDelay   func(digestHex string) time.Duration
+	Blobs        map[string][]byte // file name -> decoded payload
+	BlobsEncoded map[string][]byte // file name -> encoded blob as stored
+	Previous     map[string][]byte // archive name -> raw didx
+	Finished     bool
+	FailUpgrade  int            // respond with this status instead of 101
+	FailPath     map[string]int // h2 path -> status for the next call
 
-	// previousMissingStatus/Msg override the response for a /previous
+	// PreviousMissingStatus/Msg override the response for a /previous
 	// request on an archive with no registered previous index (default:
 	// pmoxs3-style plain 404). The real server answers 400 with a message
 	// depending on whether the snapshot or just the archive is missing.
-	previousMissingStatus int
-	previousMissingMsg    string
+	PreviousMissingStatus int
+	PreviousMissingMsg    string
+
+	sessions []net.Conn
+	nextWID  uint64
+	known    map[string]bool // uploaded or registered via /previous
 }
 
-func newMockPBS(t *testing.T) *mockPBS {
+// NewServer starts a mock server on a loopback port; it is shut down when
+// the test ends.
+func NewServer(t testing.TB) *Server {
 	t.Helper()
 
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -116,27 +127,27 @@ func newMockPBS(t *testing.T) *mockPBS {
 		t.Fatal(err)
 	}
 
-	m := &mockPBS{
+	m := &Server{
 		t:            t,
 		ln:           ln,
-		fingerprint:  hex.EncodeToString(sum[:]),
-		baseURL:      "https://" + ln.Addr().String(),
+		Fingerprint:  hex.EncodeToString(sum[:]),
+		URL:          "https://" + ln.Addr().String(),
 		zdec:         dec,
 		nextWID:      1,
-		indexes:      make(map[uint64]*mockIndex),
-		chunks:       make(map[string][]byte),
+		Indexes:      make(map[uint64]*Index),
+		Chunks:       make(map[string][]byte),
 		known:        make(map[string]bool),
-		blobs:        make(map[string][]byte),
-		blobsEncoded: make(map[string][]byte),
-		previous:     make(map[string][]byte),
-		failPath:     make(map[string]int),
+		Blobs:        make(map[string][]byte),
+		BlobsEncoded: make(map[string][]byte),
+		Previous:     make(map[string][]byte),
+		FailPath:     make(map[string]int),
 	}
 	go m.serve()
 	t.Cleanup(func() { ln.Close(); dec.Close() })
 	return m
 }
 
-func (m *mockPBS) serve() {
+func (m *Server) serve() {
 	for {
 		conn, err := m.ln.Accept()
 		if err != nil {
@@ -146,7 +157,7 @@ func (m *mockPBS) serve() {
 	}
 }
 
-func (m *mockPBS) handleConn(conn net.Conn) {
+func (m *Server) handleConn(conn net.Conn) {
 	defer conn.Close()
 	br := bufio.NewReader(conn)
 	for {
@@ -168,15 +179,15 @@ func (m *mockPBS) handleConn(conn net.Conn) {
 	}
 }
 
-func (m *mockPBS) handleTicket(conn net.Conn, req *http.Request) {
+func (m *Server) handleTicket(conn net.Conn, req *http.Request) {
 	if err := req.ParseForm(); err != nil {
 		return
 	}
-	m.mu.Lock()
-	m.loginCount++
-	m.mu.Unlock()
+	m.Lock()
+	m.LoginCount++
+	m.Unlock()
 
-	if req.PostFormValue("password") != "hunter2" {
+	if req.PostFormValue("password") != Password {
 		fmt.Fprintf(conn, "HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
 		return
 	}
@@ -188,11 +199,11 @@ func (m *mockPBS) handleTicket(conn net.Conn, req *http.Request) {
 		len(body), body)
 }
 
-func (m *mockPBS) handleUpgrade(conn net.Conn, req *http.Request) {
-	m.mu.Lock()
-	m.upgradeReqs = append(m.upgradeReqs, req)
-	fail := m.failUpgrade
-	m.mu.Unlock()
+func (m *Server) handleUpgrade(conn net.Conn, req *http.Request) {
+	m.Lock()
+	m.UpgradeReqs = append(m.UpgradeReqs, req)
+	fail := m.FailUpgrade
+	m.Unlock()
 
 	if fail != 0 {
 		fmt.Fprintf(conn, "HTTP/1.1 %d %s\r\nContent-Length: 7\r\nConnection: close\r\n\r\nrefused",
@@ -205,18 +216,19 @@ func (m *mockPBS) handleUpgrade(conn net.Conn, req *http.Request) {
 	}
 	fmt.Fprintf(conn, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: proxmox-backup-protocol-v1\r\nConnection: Upgrade\r\n\r\n")
 
-	m.mu.Lock()
+	m.Lock()
 	m.sessions = append(m.sessions, conn)
-	m.mu.Unlock()
+	m.Unlock()
 
 	(&http2.Server{}).ServeConn(conn, &http2.ServeConnOpts{
 		Handler: http.HandlerFunc(m.handleH2),
 	})
 }
 
-func (m *mockPBS) dropSessions() {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+// DropSessions closes every upgraded session connection.
+func (m *Server) DropSessions() {
+	m.Lock()
+	defer m.Unlock()
 	for _, c := range m.sessions {
 		c.Close()
 	}
@@ -228,15 +240,15 @@ func httpError(w http.ResponseWriter, code int, format string, args ...any) {
 	fmt.Fprintf(w, format, args...)
 }
 
-func (m *mockPBS) handleH2(w http.ResponseWriter, r *http.Request) {
-	m.mu.Lock()
-	if code, ok := m.failPath[r.URL.Path]; ok {
-		delete(m.failPath, r.URL.Path)
-		m.mu.Unlock()
+func (m *Server) handleH2(w http.ResponseWriter, r *http.Request) {
+	m.Lock()
+	if code, ok := m.FailPath[r.URL.Path]; ok {
+		delete(m.FailPath, r.URL.Path)
+		m.Unlock()
 		httpError(w, code, "mock failure for %s", r.URL.Path)
 		return
 	}
-	m.mu.Unlock()
+	m.Unlock()
 
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -262,11 +274,11 @@ func (m *mockPBS) handleH2(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		in := struct{ Name string }{name}
-		m.mu.Lock()
+		m.Lock()
 		wid := m.nextWID
 		m.nextWID++
-		m.indexes[wid] = &mockIndex{name: in.Name}
-		m.mu.Unlock()
+		m.Indexes[wid] = &Index{Name: in.Name}
+		m.Unlock()
 		fmt.Fprintf(w, `{"data":%d}`, wid)
 
 	case "PUT /dynamic_index":
@@ -283,10 +295,10 @@ func (m *mockPBS) handleH2(w http.ResponseWriter, r *http.Request) {
 			httpError(w, 400, "bad append lengths: %d/%d", len(in.Digests), len(in.Offsets))
 			return
 		}
-		m.mu.Lock()
-		defer m.mu.Unlock()
-		idx, ok := m.indexes[in.WID]
-		if !ok || idx.closed {
+		m.Lock()
+		defer m.Unlock()
+		idx, ok := m.Indexes[in.WID]
+		if !ok || idx.Closed {
 			httpError(w, 400, "unknown or closed wid %d", in.WID)
 			return
 		}
@@ -296,8 +308,8 @@ func (m *mockPBS) handleH2(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		idx.digests = append(idx.digests, in.Digests...)
-		idx.offsets = append(idx.offsets, in.Offsets...)
+		idx.Digests = append(idx.Digests, in.Digests...)
+		idx.Offsets = append(idx.Offsets, in.Offsets...)
 
 	case "POST /dynamic_close":
 		q := r.URL.Query()
@@ -333,24 +345,24 @@ func (m *mockPBS) handleH2(w http.ResponseWriter, r *http.Request) {
 			httpError(w, 400, "close body %q does not match query parameters", body)
 			return
 		}
-		m.mu.Lock()
-		defer m.mu.Unlock()
-		idx, ok := m.indexes[in.WID]
-		if !ok || idx.closed {
+		m.Lock()
+		defer m.Unlock()
+		idx, ok := m.Indexes[in.WID]
+		if !ok || idx.Closed {
 			httpError(w, 400, "unknown or closed wid %d", in.WID)
 			return
 		}
-		if uint64(len(idx.digests)) != in.ChunkCount {
-			httpError(w, 400, "chunk-count %d, appended %d", in.ChunkCount, len(idx.digests))
+		if uint64(len(idx.Digests)) != in.ChunkCount {
+			httpError(w, 400, "chunk-count %d, appended %d", in.ChunkCount, len(idx.Digests))
 			return
 		}
-		idx.closed, idx.csum, idx.size, idx.chunkCount = true, in.Csum, in.Size, in.ChunkCount
+		idx.Closed, idx.Csum, idx.Size, idx.ChunkCount = true, in.Csum, in.Size, in.ChunkCount
 
 	case "POST /dynamic_chunk":
 		q := r.URL.Query()
-		m.mu.Lock()
-		delay := m.chunkDelay
-		m.mu.Unlock()
+		m.Lock()
+		delay := m.ChunkDelay
+		m.Unlock()
 		if delay != nil {
 			time.Sleep(delay(q.Get("digest")))
 		}
@@ -379,10 +391,10 @@ func (m *mockPBS) handleH2(w http.ResponseWriter, r *http.Request) {
 			httpError(w, 400, "digest %s, content hashes to %s", q.Get("digest"), got)
 			return
 		}
-		m.mu.Lock()
-		m.chunks[q.Get("digest")] = plain
+		m.Lock()
+		m.Chunks[q.Get("digest")] = plain
 		m.known[q.Get("digest")] = true
-		m.mu.Unlock()
+		m.Unlock()
 
 	case "POST /blob":
 		q := r.URL.Query()
@@ -395,14 +407,14 @@ func (m *mockPBS) handleH2(w http.ResponseWriter, r *http.Request) {
 			httpError(w, 400, "encoded-size %d, body %d", enc, len(body))
 			return
 		}
-		m.mu.Lock()
-		m.blobs[q.Get("file-name")] = payload
-		m.blobsEncoded[q.Get("file-name")] = append([]byte(nil), body...)
-		m.mu.Unlock()
+		m.Lock()
+		m.Blobs[q.Get("file-name")] = payload
+		m.BlobsEncoded[q.Get("file-name")] = append([]byte(nil), body...)
+		m.Unlock()
 
 	case "GET /previous":
-		m.mu.Lock()
-		data, ok := m.previous[r.URL.Query().Get("archive-name")]
+		m.Lock()
+		data, ok := m.Previous[r.URL.Query().Get("archive-name")]
 		if ok {
 			// Like the real server, downloading the previous index makes
 			// its chunks known to the session.
@@ -410,8 +422,8 @@ func (m *mockPBS) handleH2(w http.ResponseWriter, r *http.Request) {
 				m.known[hex.EncodeToString(data[i+8:i+40])] = true
 			}
 		}
-		missingStatus, missingMsg := m.previousMissingStatus, m.previousMissingMsg
-		m.mu.Unlock()
+		missingStatus, missingMsg := m.PreviousMissingStatus, m.PreviousMissingMsg
+		m.Unlock()
 		if !ok {
 			if missingStatus != 0 {
 				httpError(w, missingStatus, "%s", missingMsg)
@@ -423,9 +435,9 @@ func (m *mockPBS) handleH2(w http.ResponseWriter, r *http.Request) {
 		w.Write(data)
 
 	case "POST /finish":
-		m.mu.Lock()
-		m.finished = true
-		m.mu.Unlock()
+		m.Lock()
+		m.Finished = true
+		m.Unlock()
 
 	default:
 		httpError(w, 404, "mock: no endpoint %s %s", r.Method, r.URL.Path)
@@ -438,7 +450,7 @@ func (m *mockPBS) handleH2(w http.ResponseWriter, r *http.Request) {
 // mock's key — an independent reimplementation of the client's framing, so
 // the two can't share a bug. The second result reports whether the frame was
 // encrypted.
-func (m *mockPBS) decodeBlob(framed []byte) ([]byte, bool, error) {
+func (m *Server) decodeBlob(framed []byte) ([]byte, bool, error) {
 	if len(framed) < 12 {
 		return nil, false, fmt.Errorf("framed blob too short: %d", len(framed))
 	}
@@ -488,9 +500,9 @@ func (m *mockPBS) decodeBlob(framed []byte) ([]byte, bool, error) {
 	return nil, false, fmt.Errorf("unknown blob magic %x", framed[:8])
 }
 
-// setCryptKey arms the mock's encrypted-upload verification, deriving the
+// SetCryptKey arms the mock's encrypted-upload verification, deriving the
 // digest-namespace key independently of the client implementation.
-func (m *mockPBS) setCryptKey(key [32]byte) {
+func (m *Server) SetCryptKey(key [32]byte) {
 	m.cryptKey = &key
 	idKey, err := pbkdf2.Key(sha256.New, string(key[:]), []byte("_id_key"), 10, 32)
 	if err != nil {
@@ -499,8 +511,8 @@ func (m *mockPBS) setCryptKey(key [32]byte) {
 	copy(m.idKey[:], idKey)
 }
 
-// makeDidx builds a synthetic dynamic index file for previous-backup tests.
-func makeDidx(entries ...[32]byte) []byte {
+// MakeDidx builds a synthetic dynamic index file for previous-backup tests.
+func MakeDidx(entries ...[32]byte) []byte {
 	out := make([]byte, 4096, 4096+40*len(entries))
 	copy(out, []byte{28, 145, 78, 165, 25, 186, 179, 205})
 	offset := uint64(0)

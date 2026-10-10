@@ -12,6 +12,7 @@ import (
 
 	"github.com/osshield/gopbs/chunker"
 	"github.com/osshield/gopbs/pbs"
+	"github.com/osshield/gopbs/pbs/pbstest"
 	"github.com/osshield/gopbs/reuse"
 )
 
@@ -52,10 +53,10 @@ func TestUploadPXARv2Reuse(t *testing.T) {
 	}
 	injected := prevChunks[1:3]
 
-	m := newMockPBS(t)
-	m.mu.Lock()
-	m.previous["root.ppxar.didx"] = didxFor(prevChunks)
-	m.mu.Unlock()
+	m := pbstest.NewServer(t)
+	m.Lock()
+	m.Previous["root.ppxar.didx"] = didxFor(prevChunks)
+	m.Unlock()
 
 	segA := seededBytes(300<<10, 2)
 	segB := seededBytes(200<<10, 3)
@@ -91,15 +92,15 @@ func TestUploadPXARv2Reuse(t *testing.T) {
 		t.Errorf("entries %d (chunks %d), last end %d", len(payloadStats.Entries), payloadStats.ChunkCount, payloadStats.Entries[len(payloadStats.Entries)-1].EndOffset)
 	}
 
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	var idx *mockIndex
-	for _, i := range m.indexes {
-		if i.name == "root.ppxar.didx" {
+	m.Lock()
+	defer m.Unlock()
+	var idx *pbstest.Index
+	for _, i := range m.Indexes {
+		if i.Name == "root.ppxar.didx" {
 			idx = i
 		}
 	}
-	if idx == nil || !idx.closed {
+	if idx == nil || !idx.Closed {
 		t.Fatal("payload index missing or not closed")
 	}
 	// Order: segA's chunks, the two injected chunks, segB's chunks; offsets contiguous
@@ -113,25 +114,25 @@ func TestUploadPXARv2Reuse(t *testing.T) {
 	for _, e := range expB {
 		want = append(want, e.digest)
 	}
-	if strings.Join(idx.digests, ",") != strings.Join(want, ",") {
-		t.Fatalf("index digests\n got %v\nwant %v", idx.digests, want)
+	if strings.Join(idx.Digests, ",") != strings.Join(want, ",") {
+		t.Fatalf("index digests\n got %v\nwant %v", idx.Digests, want)
 	}
 	offset := uint64(0)
-	for i, o := range idx.offsets {
+	for i, o := range idx.Offsets {
 		if o != offset {
 			t.Fatalf("entry %d at offset %d, want %d", i, o, offset)
 		}
 		offset = payloadStats.Entries[i].EndOffset
 	}
 	for _, ch := range injected {
-		if _, uploaded := m.chunks[hex.EncodeToString(ch.Digest[:])]; uploaded {
+		if _, uploaded := m.Chunks[hex.EncodeToString(ch.Digest[:])]; uploaded {
 			t.Error("an injected chunk was uploaded")
 		}
 	}
 }
 
 func TestUploadPXARv2ReuseUnknownChunk(t *testing.T) {
-	m := newMockPBS(t)
+	m := pbstest.NewServer(t)
 	var framed bytes.Buffer
 	fw := reuse.NewWriter(&framed)
 	fw.Write(seededBytes(10<<10, 4))
