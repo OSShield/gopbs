@@ -111,6 +111,7 @@ type Archive struct {
 	opts    Options
 	adds    []addition
 	streams []*scan.Node
+	trees   []*scan.Node
 	// cliPatterns is the Options.Scan.Exclude list in .pxarexclude-cli line
 	// form; nil when there are no patterns.
 	cliPatterns []byte
@@ -235,6 +236,64 @@ func (a *Archive) AddStream(name string, size int64, r io.Reader) error {
 	return nil
 }
 
+// AddTree queues a virtual directory tree the caller built: KindDirectory
+// nodes with KindStream leaves (scan.StreamNode, or nodes with Stat filled in
+// by the caller — mode, uid/gid, mtime and the declared size are what the
+// archive records, and what metadata change detection compares against the
+// previous snapshot). Children are sorted into archive order; names must be
+// unique within a directory. A single tree and nothing else is the archive
+// root (its own name is not recorded); otherwise it appears under the virtual
+// root with root.Name. Scan options (exclusions, filters) do not apply: the
+// caller decides what the tree contains. Readers are consumed during
+// generation, so an Archive with a tree generates once.
+func (a *Archive) AddTree(root *scan.Node) error {
+	if root == nil || root.Kind != scan.KindDirectory {
+		return errors.New("archive: AddTree needs a directory node")
+	}
+	if err := validateTree(root, root.Name); err != nil {
+		return fmt.Errorf("archive: %w", err)
+	}
+	a.trees = append(a.trees, root)
+	return nil
+}
+
+func validateTree(n *scan.Node, path string) error {
+	switch n.Kind {
+	case scan.KindDirectory:
+		if n.Stat.Mode&scan.ModeTypeMask != scan.ModeDir {
+			n.Stat.Mode = scan.ModeDir | n.Stat.Mode&^scan.ModeTypeMask
+		}
+		sort.Slice(n.Children, func(i, j int) bool { return n.Children[i].Name < n.Children[j].Name })
+		for i, c := range n.Children {
+			if err := pxar.ValidateFilename(c.Name); err != nil {
+				return err
+			}
+			if i > 0 && c.Name == n.Children[i-1].Name {
+				return fmt.Errorf("duplicate name %q in %s", c.Name, path)
+			}
+			if err := validateTree(c, path+"/"+c.Name); err != nil {
+				return err
+			}
+		}
+	case scan.KindStream:
+		if n.Stream == nil {
+			return fmt.Errorf("stream %s has no reader", path)
+		}
+		if n.Stat.Size < 0 {
+			return fmt.Errorf("stream %s has negative size %d", path, n.Stat.Size)
+		}
+		if n.Stat.Mode&scan.ModeTypeMask != scan.ModeRegular {
+			n.Stat.Mode = scan.ModeRegular | n.Stat.Mode&^scan.ModeTypeMask
+		}
+		if n.Stat.Nlink == 0 {
+			n.Stat.Nlink = 1
+		}
+	default:
+		return fmt.Errorf("%s: a virtual tree holds directories and streams only", path)
+	}
+	return nil
+}
+
 // buildTree scans the queued roots into a single node tree. v2 selects the
 // split-format layout, which records exclude patterns in the prelude rather
 // than as a .pxarexclude-cli root file.
@@ -287,7 +346,7 @@ func cliPatternNode(content []byte) *scan.Node {
 
 // scanRoots scans the queued roots into a single node tree.
 func (a *Archive) scanRoots() (*scan.Node, error) {
-	if len(a.adds) == 0 && len(a.streams) == 0 {
+	if len(a.adds) == 0 && len(a.streams) == 0 && len(a.trees) == 0 {
 		return nil, errors.New("archive: nothing added")
 	}
 
@@ -306,15 +365,19 @@ func (a *Archive) scanRoots() (*scan.Node, error) {
 	}
 
 	// A single directory and nothing else: that directory is the root.
-	if len(a.adds) == 1 && a.adds[0].kind == addDir && len(a.streams) == 0 {
+	if len(a.adds) == 1 && a.adds[0].kind == addDir && len(a.streams) == 0 && len(a.trees) == 0 {
 		return s.ScanDirectory(a.adds[0].path, "")
+	}
+	// Likewise a single virtual tree
+	if len(a.trees) == 1 && len(a.adds) == 0 && len(a.streams) == 0 {
+		return a.trees[0], nil
 	}
 
 	if a.opts.Name == "" {
 		return nil, errors.New("archive: Options.Name is required when the archive has multiple roots")
 	}
 
-	children := make([]*scan.Node, 0, len(a.adds)+len(a.streams))
+	children := make([]*scan.Node, 0, len(a.adds)+len(a.streams)+len(a.trees))
 	for _, add := range a.adds {
 		var (
 			n   *scan.Node
@@ -337,6 +400,7 @@ func (a *Archive) scanRoots() (*scan.Node, error) {
 		children = append(children, n)
 	}
 	children = append(children, a.streams...)
+	children = append(children, a.trees...)
 
 	root, err := scan.VirtualRoot(a.opts.Name, children)
 	if err != nil {

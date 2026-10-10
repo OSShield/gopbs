@@ -23,6 +23,7 @@ import (
 
 	"github.com/osshield/gopbs/archive"
 	"github.com/osshield/gopbs/pbs"
+	"github.com/osshield/gopbs/scan"
 )
 
 // Format selects the pxar archive format.
@@ -67,6 +68,12 @@ type BackupOptions struct {
 	// root alongside Paths. Readers are consumed during the backup, so a
 	// BackupOptions value with streams is good for one call.
 	Streams []Stream
+	// Trees are caller-built virtual directory trees (scan.KindDirectory
+	// nodes with scan.KindStream leaves), see archive.Archive.AddTree. A
+	// single tree and nothing else is the archive root; otherwise each tree
+	// sits under the virtual root with its own name. Like Streams, good for
+	// one call.
+	Trees []*scan.Node
 	// Blobs are uploaded as separate blob files in the snapshot, alongside
 	// the archive indexes and listed in the manifest — they are not part of
 	// the archive. Use them for backup metadata PBS has no native place for
@@ -151,7 +158,7 @@ func Backup(ctx context.Context, opts BackupOptions) (*BackupResult, error) {
 	if opts.Format != FormatV1 && opts.Format != FormatV2 {
 		return nil, fmt.Errorf("gopbs: unknown format %d", opts.Format)
 	}
-	if len(opts.Paths) == 0 && len(opts.Streams) == 0 {
+	if len(opts.Paths) == 0 && len(opts.Streams) == 0 && len(opts.Trees) == 0 {
 		return nil, fmt.Errorf("gopbs: nothing to back up")
 	}
 	blobNames, err := blobFileNames(opts.Blobs)
@@ -189,6 +196,11 @@ func Backup(ctx context.Context, opts BackupOptions) (*BackupResult, error) {
 	}
 	for _, s := range opts.Streams {
 		if err := arch.AddStream(s.Name, s.Size, s.Reader); err != nil {
+			return nil, err
+		}
+	}
+	for _, tr := range opts.Trees {
+		if err := arch.AddTree(tr); err != nil {
 			return nil, err
 		}
 	}
