@@ -16,24 +16,12 @@ type Stat struct {
 	Rdev       pxar.Device
 }
 
-// Xattr is one extended attribute. Values may contain arbitrary bytes.
-type Xattr struct {
-	Name  string
-	Value []byte
-}
+// Xattr is one extended attribute (see pxar.Xattr).
+type Xattr = pxar.Xattr
 
-// ACLs holds a node's POSIX ACL entries in encoder-ready form. A nil *ACLs
-// means the node has no ACL records to emit (a trivial ACL that only mirrors
-// the mode bits does not count).
-type ACLs struct {
-	Users    []pxar.ACLUser  // named users (access ACL)
-	Groups   []pxar.ACLGroup // named groups (access ACL)
-	GroupObj *uint64         // owning-group permissions; set only when a mask entry exists
-
-	Default       *pxar.ACLDefault // default ACL object permissions (directories)
-	DefaultUsers  []pxar.ACLUser
-	DefaultGroups []pxar.ACLGroup
-}
+// ACLs holds a node's POSIX ACL entries (see pxar.ACLs). A nil *ACLs means
+// the node has no ACL records to emit.
+type ACLs = pxar.ACLs
 
 // MetadataReader is the platform seam: everything the scanner asks of the
 // filesystem. The full-fidelity implementation targets Linux; other platforms
