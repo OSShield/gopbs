@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"math/rand"
 	"os"
@@ -300,5 +301,56 @@ func TestExtractCancel(t *testing.T) {
 	err := restore.Extract(ctx, pxar.NewReaderV1(bytes.NewReader(v1)), t.TempDir(), restore.Options{})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// BenchmarkExtract measures decoding plus writing to disk, no network:
+// many small files stress per-entry metadata calls, few large ones raw
+// throughput.
+func BenchmarkExtract(b *testing.B) {
+	for _, shape := range []struct {
+		name        string
+		files, size int
+	}{{"many-small", 4000, 4 << 10}, {"few-large", 4, 16 << 20}} {
+		b.Run(shape.name, func(b *testing.B) {
+			src := b.TempDir()
+			rng := rand.New(rand.NewSource(1))
+			for i := range shape.files {
+				data := make([]byte, shape.size)
+				rng.Read(data)
+				dir := filepath.Join(src, fmt.Sprintf("d%02d", i%50))
+				os.MkdirAll(dir, 0o755)
+				if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("f%d", i)), data, 0o644); err != nil {
+					b.Fatal(err)
+				}
+			}
+			a, err := archive.New(archive.Options{})
+			if err != nil {
+				b.Fatal(err)
+			}
+			if err := a.AddDirectory(src); err != nil {
+				b.Fatal(err)
+			}
+			rc, err := a.GenerateV1(context.Background())
+			if err != nil {
+				b.Fatal(err)
+			}
+			v1, err := io.ReadAll(rc)
+			rc.Close()
+			if err != nil {
+				b.Fatal(err)
+			}
+			b.SetBytes(int64(shape.files * shape.size))
+			for b.Loop() {
+				dst := filepath.Join(b.TempDir(), "out")
+				if err := restore.Extract(context.Background(), pxar.NewReaderV1(bytes.NewReader(v1)), dst, restore.Options{}); err != nil {
+					b.Fatal(err)
+				}
+				b.StopTimer()
+				os.RemoveAll(dst)
+				b.StartTimer()
+			}
+			b.ReportMetric(float64(shape.files)*float64(b.N)/b.Elapsed().Seconds(), "files/s")
+		})
 	}
 }

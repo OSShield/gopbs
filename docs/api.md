@@ -230,8 +230,11 @@ io.Copy(out, rc)
   delivers them in order; memory is roughly `Workers × ChunkSizeAvg`.
 - `OpenDynamicIndexAt` gives random access instead: an `*IndexFile`
   (`io.ReaderAt` + `Size`) that fetches chunks when a read first touches
-  them, verifies them the same way, and keeps the last 8 in a cache
-  (concurrent reads of one chunk share the download). It is what
+  them, verifies them the same way, and keeps recent ones in a small cache
+  (concurrent reads of one chunk share the download). Sequential reads are
+  read ahead with a window that grows by one chunk per consecutive step, up
+  to `Config.Workers`, so a v2 full restore streams nearly as fast as v1
+  while a lookup or small file fetches at most a chunk extra. It is what
   `pxar.OpenV1`/`OpenV2` need to browse or extract single files from a
   remote archive without downloading all of it:
 

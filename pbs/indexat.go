@@ -9,14 +9,20 @@ import (
 	"sync"
 )
 
-// ponytail: a fixed-size LRU, about 32 MiB at the default chunk size; add
-// sequential read-ahead if large restores through ReadAt prove slow.
+// indexCacheChunks is the LRU size beyond the read-ahead window: about
+// 32 MiB at the default chunk size.
 const indexCacheChunks = 8
 
 // IndexFile is random access to the content of a dynamic index: an
 // io.ReaderAt over the plain, verified byte stream. Chunks are fetched when
 // a read first touches them and kept in a small LRU cache; concurrent reads
-// of the same chunk share one download. It is safe for concurrent use.
+// of the same chunk share one download. Sequential reads are detected and
+// read ahead, like the kernel's page cache does: each consecutive step to
+// the next chunk widens the window by one, up to Config.Workers chunks
+// fetched in the background, and any jump resets it. A long sequential read
+// (a v2 payload during a full restore) keeps Workers downloads in flight,
+// while lookups and small files fetch little beyond what they read. It is
+// safe for concurrent use.
 //
 // Each chunk is checked like OpenDynamicIndex checks it (size and digest);
 // a failure is returned from ReadAt, never io.EOF.
@@ -27,9 +33,13 @@ type IndexFile struct {
 	entries []IndexEntry
 	keyed   bool
 
+	ahead int // read-ahead window in chunks
+
 	mu    sync.Mutex
 	cache map[int]*cachedChunk
 	clock uint64
+	last  int // chunk of the previous read, for sequential detection
+	run   int // consecutive steps to the next chunk
 }
 
 type cachedChunk struct {
@@ -54,9 +64,13 @@ func (r *ReaderSession) OpenDynamicIndexAt(ctx context.Context, name string) (*I
 	if size != f.Size {
 		return nil, fmt.Errorf("pbs: %s: index covers %d bytes, manifest says %d", f.Filename, size, f.Size)
 	}
+	ahead := r.client.cfg.Workers
+	if ahead == 0 {
+		ahead = 4
+	}
 	return &IndexFile{
-		ctx: ctx, r: r, name: f.Filename, entries: entries, keyed: keyed,
-		cache: make(map[int]*cachedChunk),
+		ctx: ctx, r: r, name: f.Filename, entries: entries, keyed: keyed, ahead: ahead,
+		cache: make(map[int]*cachedChunk), last: -1,
 	}, nil
 }
 
@@ -96,18 +110,42 @@ func (f *IndexFile) ReadAt(p []byte, off int64) (int, error) {
 func (f *IndexFile) chunk(i int) ([]byte, error) {
 	f.mu.Lock()
 	f.clock++
-	c, ok := f.cache[i]
-	if ok {
+	c, hit := f.cache[i]
+	if hit {
 		c.used = f.clock
-		f.mu.Unlock()
-		<-c.done
-		return c.data, c.err
+	} else {
+		c = f.add(i)
 	}
-	c = &cachedChunk{done: make(chan struct{}), used: f.clock}
-	f.cache[i] = c
+	switch {
+	case f.last >= 0 && i == f.last+1:
+		f.run = min(f.run+1, f.ahead)
+		for j := i + 1; j <= i+f.run && j < len(f.entries); j++ {
+			if _, ok := f.cache[j]; !ok {
+				go f.fetch(j, f.add(j))
+			}
+		}
+	case i != f.last:
+		f.run = 0
+	}
+	f.last = i
 	f.evict()
 	f.mu.Unlock()
 
+	if !hit {
+		f.fetch(i, c)
+	}
+	<-c.done
+	return c.data, c.err
+}
+
+// add registers a pending chunk. Callers hold f.mu.
+func (f *IndexFile) add(i int) *cachedChunk {
+	c := &cachedChunk{done: make(chan struct{}), used: f.clock}
+	f.cache[i] = c
+	return c
+}
+
+func (f *IndexFile) fetch(i int, c *cachedChunk) {
 	var start uint64
 	if i > 0 {
 		start = f.entries[i-1].EndOffset
@@ -123,13 +161,12 @@ func (f *IndexFile) chunk(i int) ([]byte, error) {
 		}
 		f.mu.Unlock()
 	}
-	return c.data, c.err
 }
 
 // evict drops the least recently used finished chunks beyond the cache
 // size. Callers hold f.mu.
 func (f *IndexFile) evict() {
-	for len(f.cache) > indexCacheChunks {
+	for len(f.cache) > indexCacheChunks+2*f.ahead {
 		victim := -1
 		for i, c := range f.cache {
 			select {
