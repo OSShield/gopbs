@@ -12,7 +12,7 @@ For more details, you can have a look at the godoc documentation: https://pkg.go
 gopbs        Backup(): gives a one-call method to backup a directory tree to a PBS server
 ├── archive  tree walking, planning + generation of pxar streams (v1, v2, catalog)
 │   ├── scan     walk the filesystem tree(s) and capture metadata, sizes
-│   ├── pxar     Encodes the PXAR archive stream for v1 and v2
+│   ├── pxar     Encodes and decodes the PXAR archive stream for v1 and v2
 │   └── catalog  .pcat1 catalog encoder/decoder
 ├── pbs      the PBS client: sessions, chunked+deduplicated index uploads
 │   └── chunker  buzhash content-defined chunker (as used by PBS)
@@ -227,8 +227,20 @@ io.Copy(out, rc)
   An error at any point is returned from `Read`, never a silent `io.EOF`.
 - `OpenDynamicIndex` fetches up to `Config.Workers` chunks in parallel and
   delivers them in order; memory is roughly `Workers × ChunkSizeAvg`.
-- The reader returns the raw stream of an index. It has no pxar decoder: a
-  `.pxar.didx` comes back as the pxar byte stream.
+- `OpenDynamicIndexAt` gives random access instead: an `*IndexFile`
+  (`io.ReaderAt` + `Size`) that fetches chunks when a read first touches
+  them, verifies them the same way, and keeps the last 8 in a cache
+  (concurrent reads of one chunk share the download). It is what
+  `pxar.OpenV1`/`OpenV2` need to browse or extract single files from a
+  remote archive without downloading all of it:
+
+  ```go
+  idx, _ := r.OpenDynamicIndexAt(ctx, "root.pxar")
+  fsys, _ := pxar.OpenV1(idx, idx.Size()) // v2: OpenV2(meta, meta.Size(), payload)
+  data, _ := fs.ReadFile(fsys, "etc/hostname")
+  ```
+- The reader returns the raw stream of an index: a `.pxar.didx` comes back
+  as the pxar byte stream; decode it with `pxar.NewReaderV1` (below).
 - `DecodeBlob` decodes a framed blob or chunk on its own.
 - Test errors with `errors.Is`: `pbs.ErrAuth` (401/403, the text never
   carries credentials), `pbs.ErrNotFound` (unknown snapshot or file),
@@ -262,7 +274,20 @@ client, err := pbs.NewClient(pbs.Config{
   `Chunker.Scan` is the incremental form. Boundaries match what PBS-Client produces bit for bit.
 - **`pxar`**: append-style record encoders (`AppendEntry`, `AppendGoodbye`,
   …) with matching `Size*` functions, `Hash` (goodbye-table SipHash) and
-  `ValidateFilename`. No I/O.
+  `ValidateFilename`. `NewReaderV1(r)` / `NewReaderV2(meta, payload)` decode
+  an archive tar-style: `Next` returns each `*Node` (path, stat, xattrs,
+  ACLs, fcaps, link targets, devices) in archive order, `Read` the current
+  file's content. Input is treated as untrusted: names and hardlink targets
+  must be plain relative paths, records are size-checked and bounded, and
+  nesting is limited; the first error is sticky. A v2 `payload` may be nil
+  for metadata-only reads.
+  `OpenV1(r, size)` / `OpenV2(meta, metaSize, payload)` open an archive for
+  random access as an `fs.FS` (also `ReadDirFS`, `StatFS`, `ReadLinkFS`):
+  lookups follow the goodbye tables, so only the records on the way are
+  read. `Open`/`Stat` follow symlinks inside the archive (absolute or
+  escaping targets do not resolve), hardlinks resolve to their target, and
+  `FileInfo.Sys()` is the `*pxar.Node`. Regular files implement `ReadAt`
+  and `Seek`. Listing a v2 archive never touches the payload stream.
 - **`catalog`**: `Writer` (streaming, bottom-up) and `Decode`.
 - **`scan`**: `Scanner` walks trees into `Node`s; the `MetadataReader`
   interface is the platform seam (full implementation: Linux). `StreamNode`

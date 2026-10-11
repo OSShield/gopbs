@@ -1,6 +1,9 @@
 package pxar_test
 
 import (
+	"bytes"
+	"io"
+	"io/fs"
 	"strings"
 	"testing"
 
@@ -71,5 +74,57 @@ func FuzzPermuteBST(f *testing.F) {
 		if pos != len(sorted) {
 			t.Fatalf("in-order walk visited %d of %d items", pos, len(sorted))
 		}
+	})
+}
+
+// FuzzReader feeds arbitrary metadata and payload streams to both readers:
+// decoding must never panic, and must end in an error or io.EOF.
+func FuzzReader(f *testing.F) {
+	meta, payload := v2Archive("hello")
+	f.Add(meta, payload)
+	f.Add(dirRecords(0o755,
+		child("f", regular("content")),
+		child("h", pxar.AppendHardlink(nil, 1, "f")),
+		child("d", dirRecords(0o700, child("l", pxar.AppendEntry(nil, pxar.Entry{Mode: 0o120777}), pxar.AppendSymlink(nil, "x")))),
+	), []byte(nil))
+
+	f.Fuzz(func(t *testing.T, meta, payload []byte) {
+		for _, r := range []*pxar.Reader{
+			pxar.NewReaderV1(bytes.NewReader(meta)),
+			pxar.NewReaderV2(bytes.NewReader(meta), bytes.NewReader(payload)),
+		} {
+			for {
+				if _, err := r.Next(); err != nil {
+					break
+				}
+				if _, err := io.Copy(io.Discard, r); err != nil {
+					break
+				}
+			}
+		}
+	})
+}
+
+// FuzzFS opens arbitrary bytes as a v1 archive and walks it: lookups must
+// terminate without panicking, whatever the goodbye tables claim.
+func FuzzFS(f *testing.F) {
+	f.Add(encDir(nil, []kid{
+		{name: "a", recs: regular("A")},
+		{name: "h", recs: pxar.AppendHardlink(nil, 1, "a")},
+		{name: "l", recs: symlink("d/x")},
+		{name: "d", dir: []kid{{name: "x", recs: regular("X")}}},
+	}))
+	f.Fuzz(func(t *testing.T, data []byte) {
+		fsys, err := pxar.OpenV1(bytes.NewReader(data), int64(len(data)))
+		if err != nil {
+			return
+		}
+		fs.WalkDir(fsys, ".", func(path string, d fs.DirEntry, err error) error {
+			if err == nil && d.Type().IsRegular() {
+				fs.ReadFile(fsys, path)
+			}
+			fsys.Stat(path)
+			return nil
+		})
 	})
 }

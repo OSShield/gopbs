@@ -109,8 +109,9 @@ type Server struct {
 	PreviousMissingStatus int
 	PreviousMissingMsg    string
 
-	ChunksEncoded map[string][]byte // digest hex -> framed chunk as stored
-	Snapshots     []*Snapshot       // committed at /finish
+	ChunksEncoded  map[string][]byte // digest hex -> framed chunk as stored
+	Snapshots      []*Snapshot       // committed at /finish
+	ChunkDownloads int               // chunks served to reader sessions
 
 	sessions []net.Conn
 	nextWID  uint64
@@ -391,6 +392,7 @@ func (m *Server) handleReaderH2(sess *session, w http.ResponseWriter, r *http.Re
 			httpError(w, 404, "no chunk %s", d)
 			return
 		}
+		m.ChunkDownloads++
 		w.Write(data)
 
 	default:
