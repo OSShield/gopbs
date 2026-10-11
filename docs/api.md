@@ -9,13 +9,14 @@ For more details, you can have a look at the godoc documentation: https://pkg.go
 ## Package map
 
 ```
-gopbs        Backup(): gives a one-call method to backup a directory tree to a PBS server
+gopbs        Backup() / Restore(): one call to back up a tree to PBS or restore it
 ├── archive  tree walking, planning + generation of pxar streams (v1, v2, catalog)
 │   ├── scan     walk the filesystem tree(s) and capture metadata, sizes
 │   ├── pxar     Encodes and decodes the PXAR archive stream for v1 and v2
 │   └── catalog  .pcat1 catalog encoder/decoder
-├── pbs      the PBS client: sessions, chunked+deduplicated index uploads
+├── pbs      the PBS client: sessions, chunked+deduplicated index uploads, reading back
 │   └── chunker  buzhash content-defined chunker (as used by PBS)
+└── restore  writes decoded archives to disk (full or selected paths)
 ```
 
 ## Backup(): A full backup in one method call
@@ -248,6 +249,28 @@ io.Copy(out, rc)
 - `Config.DialSession` is not used by `StartReader`: the dialer cannot tell
   a reader session from a backup session.
 
+### Master-key recovery
+
+A backup made with `Crypt.MasterPublicKey` carries its encryption key
+wrapped for the master key (`rsa-encrypted.key.blob`). With the key file
+lost, the master private key gets it back:
+
+```go
+master, _ := pbs.LoadMasterKey(pemData, passphrase) // create-master-key's PKCS#8 file
+info, _ := r.RecoverKey(ctx, master)                // r: session of a client without Crypt
+cfg.Crypt = info.CryptConfig(pbs.CryptModeEncrypt)  // reopen with the key: now verified
+```
+
+- `LoadMasterKey` reads the passphrase-protected file `proxmox-backup-client
+  key create-master-key` writes (PKCS#8, PBES2: PBKDF2 + AES-CBC) and
+  unencrypted `PRIVATE KEY` / `RSA PRIVATE KEY` PEM.
+- Nothing read before the key is known can be verified; the manifest
+  signature, which covers the wrapped key, is checked once the session is
+  reopened with the recovered key. `gopbs.Restore` and `gopbs.OpenSnapshot`
+  do this when given `MasterKey`.
+- `RecoverKey(wrapped, master)` decrypts a wrapped key obtained otherwise;
+  the result is interchangeable with `key import-with-master-key`.
+
 ### Sessions through a proxy or tunnel
 
 `pbs.Config.DialSession` replaces the client's own TLS dial and HTTP/1.1
@@ -267,6 +290,46 @@ client, err := pbs.NewClient(pbs.Config{
 ```
 
 `gopbs.Backup` honours the setting through `BackupOptions.Client`.
+
+## Restore(): a full or selective restore in one method call
+
+```go
+res, err := gopbs.Restore(ctx, gopbs.RestoreOptions{
+    Client:  cfg,                               // Crypt for encrypted backups, or:
+    MasterKey: master,                          // recover the key from the snapshot
+    Ref:     pbs.SnapshotRef{ID: "myhost"},     // zero Time: newest snapshot
+    Archive: "root",                            // as given to Backup; v1/v2 detected
+    Target:  "/srv/restore",                    // missing or empty
+    Paths:   []string{"etc/nginx"},             // optional: only these subtrees
+    Restore: restore.Options{OnWarn: logWarn},  // Overwrite, OnWarn, Writer
+})
+```
+
+- A full restore streams the archive once (`OpenDynamicIndex`, `Workers`
+  chunks in flight); a v2 payload stream is read by random access. With
+  `Paths`, entries are found through the goodbye tables and only their
+  chunks are fetched; parents are created plain and hardlinks become
+  copies.
+- The target must be missing or empty unless `Restore.Overwrite`, which
+  replaces files and symlinks in the way (a symlink is removed, never
+  followed) and merges into existing directories.
+- Metadata is best-effort: on Linux owners, permissions (setuid/setgid/
+  sticky), xattrs, POSIX ACLs, file capabilities, devices, fifos and
+  nanosecond mtimes; directories' metadata is applied last. Whatever the
+  process cannot apply (ownership without root, devices) is a
+  `restore.Warning` in `RestoreResult.Warnings`, not an error. On Windows:
+  content, directories, symlinks (with the privilege), hardlinks, the
+  read-only bit and mtimes; names Windows cannot represent are skipped with
+  a warning.
+- `gopbs.OpenSnapshot` opens a reader session with the same defaults
+  (newest snapshot, hostname, master-key recovery); `gopbs.OpenArchive`
+  returns an archive as a `*pxar.FS`; `gopbs.Browse` returns the tree as
+  `*catalog.Entry` without reading file contents, from the `.pcat1` catalog
+  for v1 (one small download) or the v2 metadata stream.
+- The `restore` package works without a server: `restore.Extract(ctx,
+  pxar.NewReaderV1(f), dir, opts)` restores a local `.pxar` file, and
+  `restore.ExtractPaths` selected paths of a `pxar.FS`. Its
+  `MetadataWriter` is the platform seam, like scan's `MetadataReader`.
 
 ## Lower layers
 

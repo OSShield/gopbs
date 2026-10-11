@@ -143,10 +143,11 @@ multi-stream and v2 backups, each with a live progress bar.
 
 * **Streams are implemented, but if the size of the stream changes (increases) after the backup operation has started for that stream, there will be a loss of data. Always make sure the stream doesn't get any more data after backups have begun.**
 
-- [ ] Restore data from PBS
+- [x] Restore data from PBS
   - [x] List snapshots
   - [x] Read blobs and raw dynamic indexes (verified and decrypted)
-  - [ ] Restore to disk (no pxar decoder)
+  - [x] Restore to disk, whole archives or selected paths (v1 and v2, full Linux metadata)
+  - [x] Recover the encryption key with the master key
   - [x] Restore to stream (`io.Reader`)
   - [x] Browse an archive and read single files (`io/fs`, random access over the index)
   - [x] Synchronous and parallel restore
