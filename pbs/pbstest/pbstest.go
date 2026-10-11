@@ -112,6 +112,9 @@ type Server struct {
 	ChunksEncoded  map[string][]byte // digest hex -> framed chunk as stored
 	Snapshots      []*Snapshot       // committed at /finish
 	ChunkDownloads int               // chunks served to reader sessions
+	// DownloadDelay, when set, delays each chunk download of a reader
+	// session, simulating network and storage latency.
+	DownloadDelay func(digestHex string) time.Duration
 
 	sessions []net.Conn
 	nextWID  uint64
@@ -363,6 +366,10 @@ func (m *Server) handleReaderUpgrade(conn net.Conn, req *http.Request) {
 }
 
 func (m *Server) handleReaderH2(sess *session, w http.ResponseWriter, r *http.Request) {
+	if r.Method+" "+r.URL.Path == "GET /chunk" {
+		m.serveChunk(sess, w, r.URL.Query().Get("digest"))
+		return
+	}
 	m.Lock()
 	defer m.Unlock()
 	switch r.Method + " " + r.URL.Path {
@@ -381,22 +388,32 @@ func (m *Server) handleReaderH2(sess *session, w http.ResponseWriter, r *http.Re
 		}
 		w.Write(data)
 
-	case "GET /chunk":
-		d := r.URL.Query().Get("digest")
-		if !sess.allowed[d] {
-			httpError(w, 400, "chunk %s not in a downloaded index", d)
-			return
-		}
-		data, ok := m.ChunksEncoded[d]
-		if !ok {
-			httpError(w, 404, "no chunk %s", d)
-			return
-		}
-		m.ChunkDownloads++
-		w.Write(data)
-
 	default:
 		httpError(w, 404, "mock: no reader endpoint %s %s", r.Method, r.URL.Path)
+	}
+}
+
+// serveChunk answers outside the lock, so concurrent downloads (and their
+// delays) overlap as they would on a real server.
+func (m *Server) serveChunk(sess *session, w http.ResponseWriter, d string) {
+	m.Lock()
+	allowed := sess.allowed[d]
+	data, ok := m.ChunksEncoded[d]
+	delay := m.DownloadDelay
+	if allowed && ok {
+		m.ChunkDownloads++
+	}
+	m.Unlock()
+	switch {
+	case !allowed:
+		httpError(w, 400, "chunk %s not in a downloaded index", d)
+	case !ok:
+		httpError(w, 404, "no chunk %s", d)
+	default:
+		if delay != nil {
+			time.Sleep(delay(d))
+		}
+		w.Write(data)
 	}
 }
 

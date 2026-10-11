@@ -183,6 +183,8 @@ services:
   # One-off backup of /source/$$SUBDIR to the pmoxs3 stack with the official
   # proxmox-backup-client (used by the performance comparison). MODE selects
   # the archive format: legacy = v1 pxar, metadata = v2 split mpxar/ppxar.
+  # KEYFILE and MASTERPUB (optional, under /keys) encrypt the backup and add
+  # the master-key wrapped copy of the key.
   pbsbackup:
     user: 1000:1000
     image: ghcr.io/osshield/gopbs-tests-pbs:latest
@@ -201,9 +203,11 @@ services:
         cd "/source/$$SUBDIR"
         proxmox-backup-client backup "root.pxar:." \
           --repository garagegarage@pbs@pmoxs3:pbs \
-          --backup-id "$$BACKUPID" --change-detection-mode "$$MODE"
+          --backup-id "$$BACKUPID" --change-detection-mode "$$MODE" \
+          $${KEYFILE:+--keyfile "$$KEYFILE"} $${MASTERPUB:+--master-pubkey-file "$$MASTERPUB"}
     volumes:
       - ./.test-source:/source:ro
+      - ./.test-keys:/keys:ro
 
   # One-off restore of a snapshot from the pmoxs3 stack with the official
   # proxmox-backup-client; SNAPSHOT/ARCHIVE/TARGET come from `compose run -e`.

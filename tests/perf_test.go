@@ -194,6 +194,77 @@ func TestPerformance(t *testing.T) {
 		timed(up.name+" (dedup rerun)", up.run)
 	}
 
+	// --- Restore from the pmoxs3 stack ------------------------------------
+	//
+	// Both tools restore the same snapshots, the official client's own v1
+	// and v2 uploads; gopbs's restores are checked against the source.
+
+	for _, snap := range []struct{ name, id string }{
+		{"v1", fmt.Sprintf("perf-official-v1-%d", stamp)},
+		{"v2", fmt.Sprintf("perf-official-v2-%d", stamp)},
+	} {
+		snaps, err := client.ListSnapshots(context.Background(), "host", snap.id)
+		if err != nil || len(snaps) == 0 {
+			t.Fatalf("listing %s: %v", snap.id, err)
+		}
+		ref := snaps[0].Ref
+		opts := gopbs.RestoreOptions{Client: cfg, Ref: ref, Archive: "root"}
+
+		target := filepath.Join(t.TempDir(), "restored")
+		timed("restore "+snap.name+" gopbs", func() error {
+			o := opts
+			o.Target = target
+			_, err := gopbs.Restore(context.Background(), o)
+			return err
+		})
+		if equal, err := compareTrees(target, perfDir); err != nil || !equal {
+			t.Errorf("gopbs restore of %s differs from the source (%v)", snap.id, err)
+		}
+		os.RemoveAll(target)
+
+		official := "perf-official-restore-" + snap.name
+		timed("restore "+snap.name+" official client (docker)", func() error {
+			return compose("run", "--rm", "--remove-orphans",
+				"-e", "SNAPSHOT="+fmt.Sprintf("host/%s/%s", ref.ID, ref.Time.UTC().Format(time.RFC3339)),
+				"-e", "ARCHIVE=root.pxar", "-e", "TARGET=/restore/"+official, "pbsrestore")
+		})
+		os.RemoveAll(filepath.Join(restoreDir, official))
+
+		// Latency of the selective paths; not throughput, so logged apart.
+		for _, op := range []struct {
+			name string
+			run  func() error
+		}{
+			{"one 64 MiB file", func() error {
+				o := opts
+				o.Target, o.Paths = filepath.Join(t.TempDir(), "one"), []string{"large/blob_00.bin"}
+				_, err := gopbs.Restore(context.Background(), o)
+				return err
+			}},
+			{"one 16 KiB file", func() error {
+				o := opts
+				o.Target, o.Paths = filepath.Join(t.TempDir(), "small"), []string{"small/d00/f00000.bin"}
+				_, err := gopbs.Restore(context.Background(), o)
+				return err
+			}},
+			{"browse", func() error {
+				sess, err := gopbs.OpenSnapshot(context.Background(), cfg, ref, nil)
+				if err != nil {
+					return err
+				}
+				defer sess.Close()
+				_, err = gopbs.Browse(context.Background(), sess, "root")
+				return err
+			}},
+		} {
+			start := time.Now()
+			if err := op.run(); err != nil {
+				t.Fatalf("%s %s: %v", snap.name, op.name, err)
+			}
+			t.Logf("%-42s %7.2fs", fmt.Sprintf("gopbs %s %s", snap.name, op.name), time.Since(start).Seconds())
+		}
+	}
+
 	t.Log("---- summary ----")
 	for _, r := range results {
 		t.Logf("%-42s %7.2fs  %8.1f MiB/s", r.name, r.seconds, total/(1<<20)/r.seconds)

@@ -1,5 +1,7 @@
 # gopbs
 
+[![GoPBS](https://github.com/OSShield/gopbs/raw/refs/heads/main/media/gopbs.svg)](https://github.com/osshield/gopbs)
+
 GoPBS is a pure-Go library for backing up data to [Proxmox Backup Server](https://www.proxmox.com/en/products/proxmox-backup-server/overview) (PBS).
 It generates PXAR archives (v1 and the split v2 format) and `.pcat1` catalogs, chunks and
 deduplicates content exactly like the official client, and uploads over the PBS HTTP/2
@@ -143,10 +145,11 @@ multi-stream and v2 backups, each with a live progress bar.
 
 * **Streams are implemented, but if the size of the stream changes (increases) after the backup operation has started for that stream, there will be a loss of data. Always make sure the stream doesn't get any more data after backups have begun.**
 
-- [ ] Restore data from PBS
+- [x] Restore data from PBS
   - [x] List snapshots
   - [x] Read blobs and raw dynamic indexes (verified and decrypted)
-  - [ ] Restore to disk (no pxar decoder)
+  - [x] Restore to disk, whole archives or selected paths (v1 and v2, full Linux metadata)
+  - [x] Recover the encryption key with the master key
   - [x] Restore to stream (`io.Reader`)
   - [x] Browse an archive and read single files (`io/fs`, random access over the index)
   - [x] Synchronous and parallel restore

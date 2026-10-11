@@ -76,10 +76,31 @@ a quarter 1 MiB text files, a quarter 16 KiB small files), then times:
   official `pxar` CLI (v1 and split) — with byte-equality sanity checks;
 - **upload to pmoxs3**: `gopbs.Backup` (v1, v2) vs `proxmox-backup-client`
   (`legacy`, `metadata`), each as a fresh backup and as a fully-deduplicated
-  rerun.
+  rerun;
+- **restore from pmoxs3**: `gopbs.Restore` vs `proxmox-backup-client
+  restore` of the same snapshots (the official client's v1 and v2 uploads;
+  gopbs's result is compared with the source), plus the latency of
+  restoring one large and one small file and of `gopbs.Browse`.
 
 Container-based runs include ~1 s of docker startup; use larger trees for
 meaningful throughput numbers.
+
+Restore results, 512 MiB, one machine (2026-10-11):
+
+| | gopbs | official client (docker) |
+|---|---|---|
+| full restore v1 | 2.17 s, 236 MiB/s | 6.47 s, 79 MiB/s |
+| full restore v2 | 2.95 s, 174 MiB/s | 8.91 s, 58 MiB/s |
+| one 64 MiB file, v1 / v2 | 0.57 s / 0.44 s | |
+| one 16 KiB file, v1 / v2 | 0.17 s / 0.08 s | |
+| browse, v1 (catalog) / v2 (metadata stream) | 0.01 s / 0.04 s | |
+
+The official client runs as root and restores ownership; gopbs ran as the
+host user. Without docker's ~1 s startup it would still be about 2.5x
+slower here. `BenchmarkRestore` (root package) isolates the effect of
+latency with `pbstest`'s `DownloadDelay`; `BenchmarkExtract` (`restore`)
+measures decoding and writing alone (~2 GB/s large files, ~31k small
+files/s).
 
 ## Conventions
 

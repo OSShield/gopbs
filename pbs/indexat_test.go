@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/osshield/gopbs/pbs"
 	"github.com/osshield/gopbs/pbs/pbstest"
@@ -81,16 +82,18 @@ func TestIndexFileConcurrent(t *testing.T) {
 	data := randomBytes(1_500_000)
 	ref, _ := backupStream(t, c, pbs.SnapshotRef{ID: "org1"}, data, []byte("{}"))
 
-	// Simultaneous reads of one chunk download it once.
+	// Simultaneous reads of one chunk download it once. The last chunk
+	// has nothing after it to read ahead.
 	f := openAt(t, c, ref, context.Background())
 	m.Lock()
 	before := m.ChunkDownloads
 	m.Unlock()
+	off := int64(len(data)) - 100
 	var wg sync.WaitGroup
 	for range 20 {
 		wg.Go(func() {
 			buf := make([]byte, 100)
-			if _, err := f.ReadAt(buf, 1000); err != nil || !bytes.Equal(buf, data[1000:1100]) {
+			if _, err := f.ReadAt(buf, off); err != nil || !bytes.Equal(buf, data[off:]) {
 				t.Errorf("concurrent same-chunk read: %v", err)
 			}
 		})
@@ -149,5 +152,36 @@ func TestIndexFileCancel(t *testing.T) {
 	cancel()
 	if _, err := f.ReadAt(make([]byte, 10), 0); !errors.Is(err, context.Canceled) {
 		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+}
+
+// A sequential read keeps downloads in flight, so it beats fetching one
+// chunk at a time, and still downloads every chunk exactly once.
+func TestIndexFileReadAhead(t *testing.T) {
+	m := pbstest.NewServer(t)
+	c := clientFor(t, m, func(c *pbs.Config) { c.ChunkSizeAvg = 64 << 10; c.Workers = 4 })
+	data := randomBytes(1_000_000)
+	ref, stats := backupStream(t, c, pbs.SnapshotRef{ID: "org1"}, data, []byte("{}"))
+	const delay = 30 * time.Millisecond
+	m.Lock()
+	m.DownloadDelay = func(string) time.Duration { return delay }
+	before := m.ChunkDownloads
+	m.Unlock()
+
+	f := openAt(t, c, ref, context.Background())
+	start := time.Now()
+	got, err := io.ReadAll(io.NewSectionReader(f, 0, f.Size()))
+	elapsed := time.Since(start)
+	if err != nil || !bytes.Equal(got, data) {
+		t.Fatalf("sequential read: %v", err)
+	}
+	if serial := time.Duration(stats.ChunkCount) * delay; elapsed > serial*6/10 {
+		t.Fatalf("sequential read of %d chunks took %v; one at a time takes %v", stats.ChunkCount, elapsed, serial)
+	}
+	time.Sleep(2 * delay) // let stray prefetches land
+	m.Lock()
+	defer m.Unlock()
+	if d := m.ChunkDownloads - before; d != int(stats.ChunkCount) {
+		t.Fatalf("%d downloads for %d chunks", d, stats.ChunkCount)
 	}
 }
