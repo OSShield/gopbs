@@ -1,5 +1,7 @@
 # gopbs
 
+[![GoPBS](https://github.com/OSShield/gopbs/raw/refs/heads/main/media/gopbs.svg)](https://github.com/osshield/gopbs)
+
 GoPBS is a pure-Go library for backing up data to [Proxmox Backup Server](https://www.proxmox.com/en/products/proxmox-backup-server/overview) (PBS).
 It generates PXAR archives (v1 and the split v2 format) and `.pcat1` catalogs, chunks and
 deduplicates content exactly like the official client, and uploads over the PBS HTTP/2
