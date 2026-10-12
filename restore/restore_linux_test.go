@@ -211,9 +211,15 @@ func TestExtractPaths(t *testing.T) {
 		t.Fatal(err)
 	}
 	dst := t.TempDir()
-	err = restore.ExtractPaths(context.Background(), fsys, []string{"dir/sub", "z.hard", "dir/sub/c"}, dst, restore.Options{})
+	progress := map[string]int{}
+	err = restore.ExtractPaths(context.Background(), fsys, []string{"dir/sub", "z.hard", "dir/sub/c"}, dst, restore.Options{
+		OnProgress: func(path string, n int) { progress[path] += n },
+	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if want := map[string]int{"dir/sub/c": 5, "z.hard": 5}; !reflect.DeepEqual(progress, want) {
+		t.Fatalf("progress = %v, want %v", progress, want)
 	}
 	var got []string
 	filepath.Walk(dst, func(path string, _ os.FileInfo, _ error) error {

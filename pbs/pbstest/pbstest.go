@@ -44,6 +44,24 @@ import (
 // auth is accepted with any credentials.
 const Password = "hunter2"
 
+// Ticket is the ticket a successful login returns. A login posting a
+// ticket ("PBS:…") as the password is a renewal and succeeds, too.
+const Ticket = "PBS:user@pam:TICKETDATA=="
+
+// TFATicket is the partial ticket returned when Server.TFA is set; it
+// offers totp and recovery. TOTPCode answers it as "totp:"+TOTPCode.
+const (
+	TFATicket = "PBS:!tfa!%7B%22totp%22%3Atrue%2C%22recovery%22%3A%5B0%2C1%5D%2C%22webauthn%22%3Anull%7D:65000000::sig"
+	TOTPCode  = "123456"
+)
+
+// OpenID login: the auth URL carries OIDCState, and OpenIDLogin succeeds
+// with OIDCState and OIDCCode.
+const (
+	OIDCState = "STATE"
+	OIDCCode  = "CODE"
+)
+
 // Index is a dynamic index as recorded by the mock.
 type Index struct {
 	Name       string
@@ -90,6 +108,10 @@ type Server struct {
 
 	sync.Mutex
 	LoginCount   int
+	LoginForms   []url.Values    // every ticket and openid login form
+	APIReqs      []*http.Request // regular-API GETs (listings)
+	TFA          bool            // password logins need a second factor
+	Datastores   []string        // for ListDatastores; default {"store1"}
 	UpgradeReqs  []*http.Request
 	Indexes      map[uint64]*Index // keyed by writer id
 	Chunks       map[string][]byte // digest hex -> plaintext
@@ -209,6 +231,9 @@ func (m *Server) handleConn(conn net.Conn) {
 		case req.URL.Path == "/api2/json/access/ticket":
 			m.handleTicket(conn, req)
 			return // Connection: close
+		case strings.HasPrefix(req.URL.Path, "/api2/json/access/"):
+			m.handleAccess(conn, req)
+			return
 		case strings.HasSuffix(req.URL.Path, "/api2/json/backup"):
 			m.handleUpgrade(conn, req)
 			return
@@ -218,7 +243,12 @@ func (m *Server) handleConn(conn net.Conn) {
 		case req.Method == http.MethodGet &&
 			strings.HasPrefix(req.URL.Path, "/api2/json/admin/datastore/") &&
 			strings.HasSuffix(req.URL.Path, "/snapshots"):
+			m.recordAPI(req)
 			m.handleListSnapshots(conn, req)
+			return
+		case req.Method == http.MethodGet && strings.HasPrefix(req.URL.Path, "/api2/json/admin/datastore"):
+			m.recordAPI(req)
+			m.handleListing(conn, req)
 			return
 		default:
 			fmt.Fprintf(conn, "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
@@ -227,24 +257,153 @@ func (m *Server) handleConn(conn net.Conn) {
 	}
 }
 
+func (m *Server) recordAPI(req *http.Request) {
+	m.Lock()
+	m.APIReqs = append(m.APIReqs, req)
+	m.Unlock()
+}
+
+func writeJSON(conn net.Conn, data any) {
+	body, _ := json.Marshal(map[string]any{"data": data})
+	fmt.Fprintf(conn, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s",
+		len(body), body)
+}
+
+func writeStatus(conn net.Conn, code int) {
+	fmt.Fprintf(conn, "HTTP/1.1 %d %s\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", code, http.StatusText(code))
+}
+
 func (m *Server) handleTicket(conn net.Conn, req *http.Request) {
 	if err := req.ParseForm(); err != nil {
 		return
 	}
 	m.Lock()
 	m.LoginCount++
+	m.LoginForms = append(m.LoginForms, req.PostForm)
+	tfa := m.TFA
 	m.Unlock()
 
-	if req.PostFormValue("password") != Password {
-		fmt.Fprintf(conn, "HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
-		return
+	full := map[string]string{"ticket": Ticket, "CSRFPreventionToken": "CSRFTOKEN", "username": req.PostFormValue("username")}
+	pw := req.PostFormValue("password")
+	switch {
+	case req.PostFormValue("tfa-challenge") != "":
+		if req.PostFormValue("tfa-challenge") != TFATicket || pw != "totp:"+TOTPCode {
+			writeStatus(conn, http.StatusUnauthorized)
+			return
+		}
+		writeJSON(conn, full)
+	case pw == Password && tfa:
+		writeJSON(conn, map[string]string{"ticket": TFATicket, "username": req.PostFormValue("username")})
+	case pw == Password, strings.HasPrefix(pw, "PBS:") && !strings.HasPrefix(pw, "PBS:!tfa!"):
+		writeJSON(conn, full)
+	default:
+		writeStatus(conn, http.StatusUnauthorized)
 	}
-	body, _ := json.Marshal(map[string]any{"data": map[string]string{
-		"ticket":              "PBS:user@pam:TICKETDATA==",
-		"CSRFPreventionToken": "CSRFTOKEN",
-	}})
-	fmt.Fprintf(conn, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s",
-		len(body), body)
+}
+
+// handleAccess serves the realm list and the OpenID login endpoints.
+func (m *Server) handleAccess(conn net.Conn, req *http.Request) {
+	switch req.Method + " " + req.URL.Path {
+	case "GET /api2/json/access/domains":
+		writeJSON(conn, []map[string]string{
+			{"realm": "pam", "type": "pam", "comment": "Linux PAM"},
+			{"realm": "pbs", "type": "pbs"},
+			{"realm": "sso", "type": "openid", "comment": "Company SSO"},
+		})
+	case "POST /api2/json/access/openid/auth-url":
+		req.ParseForm()
+		writeJSON(conn, "https://idp.example/auth?"+url.Values{
+			"state":        {OIDCState},
+			"realm":        {req.PostFormValue("realm")},
+			"redirect_uri": {req.PostFormValue("redirect-url")},
+		}.Encode())
+	case "POST /api2/json/access/openid/login":
+		req.ParseForm()
+		m.Lock()
+		m.LoginForms = append(m.LoginForms, req.PostForm)
+		m.Unlock()
+		if req.PostFormValue("state") != OIDCState || req.PostFormValue("code") != OIDCCode {
+			writeStatus(conn, http.StatusUnauthorized)
+			return
+		}
+		writeJSON(conn, map[string]string{"ticket": Ticket, "CSRFPreventionToken": "CSRFTOKEN", "username": "alice@sso"})
+	default:
+		writeStatus(conn, http.StatusNotFound)
+	}
+}
+
+// handleListing serves the datastore, namespace and group listings, derived
+// from the committed snapshots.
+func (m *Server) handleListing(conn net.Conn, req *http.Request) {
+	q := req.URL.Query()
+	m.Lock()
+	defer m.Unlock()
+	switch {
+	case req.URL.Path == "/api2/json/admin/datastore":
+		stores := m.Datastores
+		if stores == nil {
+			stores = []string{"store1"}
+		}
+		data := []map[string]string{}
+		for _, s := range stores {
+			data = append(data, map[string]string{"store": s, "comment": "mock " + s})
+		}
+		writeJSON(conn, data)
+	case strings.HasSuffix(req.URL.Path, "/namespace"):
+		// Like the server: the parent itself, then its descendants up to
+		// max-depth (only 0 and 1 are supported here).
+		parent := q.Get("parent")
+		seen := map[string]bool{parent: true}
+		data := []map[string]string{{"ns": parent}}
+		for _, s := range m.Snapshots {
+			rest, ok := strings.CutPrefix(s.NS, parent)
+			if !ok || s.NS == parent || (parent != "" && !strings.HasPrefix(rest, "/")) || q.Get("max-depth") == "0" {
+				continue
+			}
+			child, _, _ := strings.Cut(strings.TrimPrefix(rest, "/"), "/")
+			if parent != "" {
+				child = parent + "/" + child
+			}
+			if !seen[child] {
+				seen[child] = true
+				data = append(data, map[string]string{"ns": child})
+			}
+		}
+		writeJSON(conn, data)
+	case strings.HasSuffix(req.URL.Path, "/groups"):
+		type group struct {
+			Type  string   `json:"backup-type"`
+			ID    string   `json:"backup-id"`
+			Last  int64    `json:"last-backup"`
+			Count int      `json:"backup-count"`
+			Owner string   `json:"owner"`
+			Files []string `json:"files"`
+		}
+		byKey := map[string]*group{}
+		var data []*group
+		for _, s := range m.Snapshots {
+			if s.NS != q.Get("ns") {
+				continue
+			}
+			g := byKey[s.Type+"/"+s.ID]
+			if g == nil {
+				g = &group{Type: s.Type, ID: s.ID, Owner: "user@pam!token"}
+				byKey[s.Type+"/"+s.ID] = g
+				data = append(data, g)
+			}
+			g.Count++
+			if s.Time > g.Last {
+				g.Last, g.Files = s.Time, nil
+				for name := range s.Sizes {
+					g.Files = append(g.Files, name)
+				}
+				sort.Strings(g.Files)
+			}
+		}
+		writeJSON(conn, data)
+	default:
+		writeStatus(conn, http.StatusNotFound)
+	}
 }
 
 func (m *Server) handleUpgrade(conn net.Conn, req *http.Request) {

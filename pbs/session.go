@@ -73,6 +73,9 @@ func (c *Client) StartBackup(ctx context.Context, ref SnapshotRef) (*BackupSessi
 	if err != nil {
 		return nil, err
 	}
+	if c.cfg.Datastore == "" && c.cfg.DialSession == nil {
+		return nil, fmt.Errorf("pbs: backup requires Config.Datastore")
+	}
 
 	query := url.Values{
 		"backup-type": {ref.Type},

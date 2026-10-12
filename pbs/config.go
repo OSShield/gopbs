@@ -11,7 +11,7 @@ import (
 )
 
 // Auth selects an authentication method. Implementations are sealed:
-// TokenAuth and PasswordAuth.
+// TokenAuth, PasswordAuth and TicketAuth.
 type Auth interface{ isAuth() }
 
 // TokenAuth authenticates with an API token: AuthID is
@@ -34,6 +34,18 @@ type PasswordAuth struct {
 
 func (PasswordAuth) isAuth() {}
 
+// TicketAuth authenticates with a ticket obtained earlier, from Login (with
+// a second factor), OpenIDLogin, or any other PBS login. Username is the
+// full user id ("user@realm"), needed to renew the ticket, which happens
+// automatically before it expires.
+type TicketAuth struct {
+	Username string
+	Ticket   string
+	CSRF     string
+}
+
+func (TicketAuth) isAuth() {}
+
 func (a PasswordAuth) userID() string { return a.Username + "@" + a.Realm }
 
 // Config configures a Client.
@@ -42,7 +54,8 @@ type Config struct {
 	// The scheme must be https; the port defaults to 8007.
 	BaseURL string
 
-	// Auth selects the authentication method: TokenAuth or PasswordAuth.
+	// Auth selects the authentication method: TokenAuth, PasswordAuth or
+	// TicketAuth.
 	Auth Auth
 
 	// Fingerprint pins the server certificate: the SHA-256 of its DER
