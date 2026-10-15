@@ -467,6 +467,9 @@ func (s *BackupSession) Finish(ctx context.Context) error {
 		Files:       s.files,
 		Unprotected: map[string]any{},
 	}
+	if s.ref.Notes != "" {
+		manifest.Unprotected["notes"] = s.ref.Notes
+	}
 	s.mu.Unlock()
 
 	if cs != nil {
