@@ -102,6 +102,10 @@ type SnapshotRef struct {
 	Type string    // "host", "vm" or "ct"; default "host"
 	ID   string    // default: os.Hostname()
 	Time time.Time // default: now; fixed for the whole session
+	// Notes is the snapshot comment PBS shows in its UI and API (the
+	// manifest's unprotected "notes" field, same place the server's notes
+	// endpoint writes). Optional; outside the manifest signature.
+	Notes string
 }
 
 func (r SnapshotRef) withDefaults() (SnapshotRef, error) {

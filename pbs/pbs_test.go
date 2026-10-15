@@ -38,7 +38,7 @@ func clientFor(t *testing.T, m *pbstest.Server, mutate func(*pbs.Config)) *pbs.C
 
 func start(t *testing.T, c *pbs.Client) *pbs.BackupSession {
 	t.Helper()
-	s, err := c.StartBackup(context.Background(), pbs.SnapshotRef{ID: "testhost"})
+	s, err := c.StartBackup(context.Background(), pbs.SnapshotRef{ID: "testhost", Notes: "backed up from web-01"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,9 +241,10 @@ func TestBackupSessionFlow(t *testing.T) {
 	}
 
 	var manifest struct {
-		BackupID   string `json:"backup-id"`
-		BackupType string `json:"backup-type"`
-		Files      []struct {
+		BackupID    string         `json:"backup-id"`
+		BackupType  string         `json:"backup-type"`
+		Unprotected map[string]any `json:"unprotected"`
+		Files       []struct {
 			Filename  string `json:"filename"`
 			Size      uint64 `json:"size"`
 			Csum      string `json:"csum"`
@@ -255,6 +256,9 @@ func TestBackupSessionFlow(t *testing.T) {
 	}
 	if manifest.BackupID != "testhost" || manifest.BackupType != "host" {
 		t.Errorf("manifest identity: %+v", manifest)
+	}
+	if got := manifest.Unprotected["notes"]; got != "backed up from web-01" {
+		t.Errorf("manifest notes: %v", got)
 	}
 	byName := map[string]int{}
 	for i, f := range manifest.Files {
