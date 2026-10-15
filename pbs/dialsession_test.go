@@ -108,9 +108,14 @@ func TestDialSession(t *testing.T) {
 	}
 }
 
-func TestNewClientRequiresAuthWithoutDialSession(t *testing.T) {
-	if _, err := pbs.NewClient(pbs.Config{BaseURL: "https://pbs.example:8007", Datastore: "s"}); err == nil {
-		t.Error("expected an error without Auth or DialSession")
+func TestBackupRequiresAuthWithoutDialSession(t *testing.T) {
+	m := pbstest.NewServer(t)
+	c, err := pbs.NewClient(pbs.Config{BaseURL: m.URL, Fingerprint: m.Fingerprint, Datastore: "s"})
+	if err != nil {
+		t.Fatalf("a client without Auth can still log in: %v", err)
+	}
+	if _, err := c.StartBackup(context.Background(), pbs.SnapshotRef{ID: "h"}); err == nil || !strings.Contains(err.Error(), "Auth is required") {
+		t.Errorf("StartBackup without Auth: %v", err)
 	}
 	if _, err := pbs.NewClient(pbs.Config{DialSession: func(context.Context, pbs.SnapshotRef) (net.Conn, error) { return nil, nil }}); err != nil {
 		t.Errorf("DialSession alone should be enough: %v", err)

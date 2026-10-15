@@ -47,6 +47,10 @@ type Options struct {
 	Writer MetadataWriter
 	// OnWarn receives non-fatal events; nil discards them.
 	OnWarn func(Warning)
+	// OnProgress, when set, is called with the archive-relative path and
+	// the byte count each time a slice of file content is written. Called
+	// from the restoring goroutine; keep it fast.
+	OnProgress func(path string, n int)
 }
 
 // Warning is a non-fatal restore event: metadata that could not be applied,
@@ -255,7 +259,11 @@ func (x *extractor) entry(n *pxar.Node, rel string, content io.Reader) error {
 		if err != nil {
 			return fmt.Errorf("restore: %w", err)
 		}
-		_, err = io.Copy(f, ctxReader{x.ctx, content})
+		var progress func(int)
+		if x.opts.OnProgress != nil {
+			progress = func(n int) { x.opts.OnProgress(name, n) }
+		}
+		_, err = io.Copy(f, ctxReader{x.ctx, content, progress})
 		if cerr := f.Close(); err == nil {
 			err = cerr
 		}
@@ -320,15 +328,20 @@ func (x *extractor) finish() error {
 }
 
 type ctxReader struct {
-	ctx context.Context
-	r   io.Reader
+	ctx      context.Context
+	r        io.Reader
+	progress func(int) // nil: no reporting
 }
 
 func (c ctxReader) Read(p []byte) (int, error) {
 	if err := c.ctx.Err(); err != nil {
 		return 0, err
 	}
-	return c.r.Read(p)
+	n, err := c.r.Read(p)
+	if n > 0 && c.progress != nil {
+		c.progress(n)
+	}
+	return n, err
 }
 
 // st_mode type bits.
