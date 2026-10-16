@@ -112,19 +112,28 @@ func TestSplitComparison(t *testing.T) {
 // UID/GID so containers write host-owned files. Output is shown only on
 // failure.
 func compose(args ...string) error {
+	_, err := composeOutput(args...)
+	return err
+}
+
+// composeOutput is compose, returning the containers' stdout (compose's own
+// progress goes to stderr and is only shown on failure).
+func composeOutput(args ...string) (string, error) {
 	cmd := exec.Command("docker", append([]string{"compose"}, args...)...)
 	cmd.Env = append(os.Environ(),
 		fmt.Sprintf("UID=%d", os.Getuid()),
 		fmt.Sprintf("GID=%d", os.Getgid()),
 	)
-	out, err := cmd.CombinedOutput()
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
 	if err != nil {
-		return fmt.Errorf("docker compose %s: %w\n%s", strings.Join(args, " "), err, out)
+		return "", fmt.Errorf("docker compose %s: %w\n%s%s", strings.Join(args, " "), err, out, stderr.Bytes())
 	}
 	if testing.Verbose() {
-		fmt.Printf("docker compose %s:\n%s", strings.Join(args, " "), out)
+		fmt.Printf("docker compose %s:\n%s%s", strings.Join(args, " "), out, stderr.Bytes())
 	}
-	return nil
+	return string(out), nil
 }
 
 func makeTree() {

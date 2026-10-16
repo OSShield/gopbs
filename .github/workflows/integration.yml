@@ -1,0 +1,69 @@
+name: Integration
+
+# pull_request (never pull_request_target): fork PRs run with a read-only
+# token and no secrets. Images are public, so no registry login is needed.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  vet:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: tests/go.mod
+      - name: Vet (integration tag)
+        working-directory: tests
+        run: go vet -tags integration ./...
+
+  # One job per server backend; each runs TestMain's archive build itself.
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: archives
+            run: '^Test(Comparison|SplitComparison|CatalogComparison|Exclude.*)$'
+          - name: pmoxs3
+            run: '^Test(PBSBackupSession|BackupOrchestrator.*|ReaderRoundTrip|RestoreOfficialBackups)$'
+          - name: epbs
+            run: '^TestEphemeralPBS$'
+    name: test (${{ matrix.name }})
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: tests/go.mod
+
+      - name: Prepare
+        working-directory: tests
+        run: |
+          sudo chown -R 1000:root .test-*
+          sudo chmod -R 777 .test-*
+          sed -i "s/1000:1000/$(id -u):$(id -g)/g" compose.yml
+          docker compose pull --ignore-buildable
+
+      - name: Go tests
+        uses: robherley/go-test-action@2f859e0c8769d755d3174eecb9af8f64660827f3 # v1.1.0
+        with:
+          moduleDirectory: tests
+          testArguments: -tags integration -timeout 30m -run ${{ matrix.run }}
+          cover: true

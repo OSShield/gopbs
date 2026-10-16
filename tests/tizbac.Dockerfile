@@ -1,4 +1,4 @@
-FROM debian:latest
+FROM debian:trixie-slim
 
 WORKDIR /app
 
@@ -6,7 +6,7 @@ COPY ./tizbac /app
 
 RUN apt-get update && apt-get install -y ca-certificates && update-ca-certificates && apt-get -y install golang && go build -o directorybackup main.go
 
-FROM debian:latest
+FROM debian:trixie-slim
 
 RUN groupadd --gid 1000 gopbs && useradd --system --uid 1000 --gid 1000 gopbs
 
