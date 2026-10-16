@@ -92,6 +92,9 @@ func TestRestoreOfficialBackups(t *testing.T) {
 
 func writeRestoreTree(t *testing.T, src string) {
 	t.Helper()
+	// src lives under sourceDir (compose mounts it), which TestComparison and
+	// TestPBS compare against: don't leave it behind for them.
+	t.Cleanup(func() { os.RemoveAll(src) })
 	rng := rand.New(rand.NewSource(7))
 	for i := range 20 {
 		dir := filepath.Join(src, fmt.Sprintf("d%d", i%4), fmt.Sprintf("s%d", i%3))
