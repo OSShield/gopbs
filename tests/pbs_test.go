@@ -48,6 +48,10 @@ func startPBSStack(t *testing.T) {
 	}
 	if os.Getenv("GOPBS_KEEP_PBS") == "" {
 		t.Cleanup(func() {
+			if t.Failed() {
+				logs, _ := composeOutput("logs", "--no-color", "pmoxs3")
+				t.Logf("pmoxs3 logs:\n%s", logs)
+			}
 			if err := compose("rm", "-sf", "pmoxs3", "garage"); err != nil {
 				t.Logf("pbs stack teardown: %v", err)
 			}
