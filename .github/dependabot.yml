@@ -1,0 +1,27 @@
+version: 2
+updates:
+  # Keeps the SHA-pinned actions in .github/workflows current.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: gomod
+    directories: [/, /tests]
+    schedule:
+      interval: weekly
+    groups:
+      go:
+        patterns: ["*"]
+
+  # Base images in tests/*.Dockerfile.
+  - package-ecosystem: docker
+    directory: /tests
+    schedule:
+      interval: weekly
+    groups:
+      docker:
+        patterns: ["*"]

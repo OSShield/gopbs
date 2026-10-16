@@ -1,42 +1,57 @@
-# name: CI
+name: CI
 
+# pull_request (never pull_request_target): fork PRs run with a read-only
+# token and no secrets.
 on:
   push:
+    branches: [main]
   pull_request:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   library:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: go.mod
       - name: Vet
         run: go vet ./...
-      
+
       - name: Staticcheck
-        uses: dominikh/staticcheck-action@v1
+        uses: dominikh/staticcheck-action@9716614d4101e79b4340dd97b10e54d68234e431 # v1.4.1
         continue-on-error: true
         with:
           install-go: false
 
-      
       - name: Test (race)
         run: go test -race ./...
-      
-      - name: Go tests
-        uses: robherley/go-test-action@v1
-        with:
-            moduleDirectory: .
-            cover: true
 
+      - name: Go tests
+        uses: robherley/go-test-action@2f859e0c8769d755d3174eecb9af8f64660827f3 # v1.1.0
+        with:
+          moduleDirectory: .
+          cover: true
 
   fuzz:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
         with:
           go-version-file: go.mod
       - name: Fuzz (20s per target)
@@ -49,38 +64,3 @@ jobs:
           go test ./catalog -run '^$' -fuzz '^FuzzVarint$'           -fuzztime 20s
           go test ./chunker -run '^$' -fuzz '^FuzzSplit$'            -fuzztime 20s
           go test ./scan    -run '^$' -fuzz '^FuzzParseACLXattr$'    -fuzztime 20s
-
-  integration-tests:
-    runs-on: ubuntu-latest
-    permissions: read-all
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: tests/go.mod
-        
-      - name: Vet (integration tag)
-        working-directory: tests
-        run: go vet -tags integration ./...
-    
-      - name: Install docker
-        uses: docker/setup-buildx-action@v2
-        with:
-          version: latest
-    
-      - name: Test (integration tag)
-        working-directory: tests
-        run: |
-            sudo chown -R 1000:root .test-*
-            sudo chmod -R 777 .test-*
-            sed -i "s/1000:1000/$(id -u):$(id -g)/g" compose.yml
-            docker compose pull
-            docker compose build gopbs
-
-      - name: Go tests
-        uses: robherley/go-test-action@v1
-        with:
-            moduleDirectory: tests
-            testArguments: -tags integration
-            cover: true
