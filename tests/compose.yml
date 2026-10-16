@@ -185,6 +185,8 @@ services:
   # the archive format: legacy = v1 pxar, metadata = v2 split mpxar/ppxar.
   # KEYFILE and MASTERPUB (optional, under /keys) encrypt the backup and add
   # the master-key wrapped copy of the key.
+  # REPO / PBS_PASSWORD / PBS_FINGERPRINT default to the pmoxs3 stack; the
+  # ephemeral-pbs tests override them (and NS) per `compose run -e`.
   pbsbackup:
     user: 1000:1000
     image: ghcr.io/osshield/gopbs-tests-pbs:latest
@@ -194,15 +196,16 @@ services:
     entrypoint: ""
     environment:
       HOME: /tmp
-      PBS_PASSWORD: garagegaragegarage
-      PBS_FINGERPRINT: "55:BC:29:4B:BA:B6:A1:03:42:A9:D8:51:14:9D:BD:00:D2:2A:9C:A1:B8:4A:85:E1:AF:B2:0C:48:40:D6:CC:A4"
+      REPO: ${REPO:-garagegarage@pbs@pmoxs3:pbs}
+      PBS_PASSWORD: ${PBS_PASSWORD:-garagegaragegarage}
+      PBS_FINGERPRINT: ${PBS_FINGERPRINT:-55:BC:29:4B:BA:B6:A1:03:42:A9:D8:51:14:9D:BD:00:D2:2A:9C:A1:B8:4A:85:E1:AF:B2:0C:48:40:D6:CC:A4}
     command:
       - bash
       - -ec
       - |
         cd "/source/$$SUBDIR"
         proxmox-backup-client backup "root.pxar:." \
-          --repository garagegarage@pbs@pmoxs3:pbs \
+          --repository "$$REPO" $${NS:+--ns "$$NS"} \
           --backup-id "$$BACKUPID" --change-detection-mode "$$MODE" \
           $${KEYFILE:+--keyfile "$$KEYFILE"} $${MASTERPUB:+--master-pubkey-file "$$MASTERPUB"}
     volumes:
@@ -224,21 +227,62 @@ services:
     entrypoint: ""
     environment:
       HOME: /tmp
-      PBS_PASSWORD: garagegaragegarage
-      PBS_FINGERPRINT: "55:BC:29:4B:BA:B6:A1:03:42:A9:D8:51:14:9D:BD:00:D2:2A:9C:A1:B8:4A:85:E1:AF:B2:0C:48:40:D6:CC:A4"
+      REPO: ${REPO:-garagegarage@pbs@pmoxs3:pbs}
+      PBS_PASSWORD: ${PBS_PASSWORD:-garagegaragegarage}
+      PBS_FINGERPRINT: ${PBS_FINGERPRINT:-55:BC:29:4B:BA:B6:A1:03:42:A9:D8:51:14:9D:BD:00:D2:2A:9C:A1:B8:4A:85:E1:AF:B2:0C:48:40:D6:CC:A4}
     command:
       - bash
       - -ec
       - |
         if [ -n "$${RAW:-}" ]; then
-          proxmox-backup-client restore "$$SNAPSHOT" "$$ARCHIVE" - --repository garagegarage@pbs@pmoxs3:pbs $${KEYFILE:+--keyfile "$$KEYFILE"} > "$$TARGET"
+          proxmox-backup-client restore "$$SNAPSHOT" "$$ARCHIVE" - --repository "$$REPO" $${NS:+--ns "$$NS"} $${KEYFILE:+--keyfile "$$KEYFILE"} > "$$TARGET"
         else
-          proxmox-backup-client restore "$$SNAPSHOT" "$$ARCHIVE" "$$TARGET" --repository garagegarage@pbs@pmoxs3:pbs $${KEYFILE:+--keyfile "$$KEYFILE"}
+          proxmox-backup-client restore "$$SNAPSHOT" "$$ARCHIVE" "$$TARGET" --repository "$$REPO" $${NS:+--ns "$$NS"} $${KEYFILE:+--keyfile "$$KEYFILE"}
         fi
         chmod -R a+rwX "$$TARGET"
     volumes:
       - ./.test-restore:/restore:rw
       - ./.test-keys:/keys:ro
+
+  # Any other proxmox-backup-client subcommand (ARGS, word-split) against
+  # REPO; the client logs to stderr, merged into stdout for the test to read.
+  pbscli:
+    user: 1000:1000
+    image: ghcr.io/osshield/gopbs-tests-pbs:latest
+    build:
+      context: .
+      dockerfile: pbs.Dockerfile
+    entrypoint: ""
+    environment:
+      HOME: /tmp
+      REPO: ${REPO:-garagegarage@pbs@pmoxs3:pbs}
+      PBS_PASSWORD: ${PBS_PASSWORD:-garagegaragegarage}
+      PBS_FINGERPRINT: ${PBS_FINGERPRINT:-55:BC:29:4B:BA:B6:A1:03:42:A9:D8:51:14:9D:BD:00:D2:2A:9C:A1:B8:4A:85:E1:AF:B2:0C:48:40:D6:CC:A4}
+    command:
+      - bash
+      - -ec
+      - |
+        proxmox-backup-client $$ARGS --repository "$$REPO" $${NS:+--ns "$$NS"} 2>&1
+    volumes:
+      - ./.test-keys:/keys:ro
+
+  # A real Proxmox Backup Server (github.com/osshield/ephemeral-pbs): root@pam
+  # / demo, datastore "data", namespaces level1/level2/level3 and level1-2,
+  # tokens backupuser@pbs!backup and restoreuser@pbs!restore with the fixed
+  # secret 12345678-1234-1234-1234-1234567890ab. Published on 8017 (pmoxs3
+  # has 8007); the client containers reach it as "pbs". The TLS certificate
+  # is self-signed per image, so epbs_test.go reads the fingerprint at
+  # runtime.
+  epbs:
+    image: ghcr.io/osshield/ephemeral-pbs:basic
+    hostname: pbs
+    ports:
+      - '8017:8007'
+    environment:
+      PASSWORD: demo
+      POSTFIX: "N"
+    tmpfs:
+      - /run
 
   garage:
     image: dxflrs/garage:v2.3.0
