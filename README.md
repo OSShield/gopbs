@@ -177,7 +177,7 @@ multi-stream and v2 backups, each with a live progress bar.
     - ~~[ ] Backup snapshots (via CSI and Snapshot API)~~
     - ~~[ ] Backup cluster resources/state~~
 
-~~items~~ will be implemented in [fallbck](https://fallbck.eu), which aims to be more of an open source full-service application backup solution for PBS. More info to come.
+~~items~~ are implemented in [github.com/osshield/fallbck](https://github.com/osshield/fallbck), which is a more complete backup solution for making application-level backups into PBS.
 
 ## Documentation
 
